@@ -2349,6 +2349,9 @@ export class PodRigInstantiator {
       resolveTargetPath: (category, effectiveId, cwd, sourcePath) =>
         input.member.runtime === "codex" && category === "skill"
           ? nodePath.join(codexSkillTargetRoot ?? nodePath.join(cwd, ".agents", "skills"), effectiveId, "SKILL.md")
+          // Starforge fork: a letta seat keeps the project-local skill path its runner reads.
+          : input.member.runtime === "letta" && category === "skill"
+            ? nodePath.join(cwd, ".agents", "skills", effectiveId, "SKILL.md")
           // OPR.0.7.0.13: a Claude seat's skills are written to its own storage, so an edit there is what to protect.
           : input.member.runtime === "claude-code" && category === "skill" && claudeSkillTargetRoot
             ? nodePath.join(claudeSkillTargetRoot, effectiveId, "SKILL.md")
