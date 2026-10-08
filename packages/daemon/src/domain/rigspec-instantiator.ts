@@ -2094,7 +2094,7 @@ export class PodRigInstantiator {
       // the same source startNode binds for the write). An adapter that writes skills
       // outside the project tree (OMP's seat agent dir) names its own skill target.
       resolveTargetPath: (category, effectiveId, cwd, sourcePath) =>
-        input.member.runtime === "codex" && category === "skill"
+        (input.member.runtime === "codex" || input.member.runtime === "letta") && category === "skill"
           ? nodePath.join(cwd, ".agents", "skills", effectiveId, "SKILL.md")
           : category === "skill" && adapter.skillTargetPath
             ? adapter.skillTargetPath(launchResult.binding.tmuxSession, effectiveId)
