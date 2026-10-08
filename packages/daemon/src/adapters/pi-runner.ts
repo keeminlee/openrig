@@ -43,9 +43,10 @@ export function createRunnerInput(
   input: NodeJS.ReadStream,
   output: NodeJS.WriteStream,
   onSubmit: (block: string) => void,
+  label = "pi-runner",
 ): readline.Interface {
   const reject = () => output.write(
-    "[pi-runner] input rejected: maximum 1048576 UTF-8 bytes; send a smaller message. Ctrl-C clears unfinished input.\n",
+    `[${label}] input rejected: maximum 1048576 UTF-8 bytes; send a smaller message. Ctrl-C clears unfinished input.\n`,
   );
   const submit = (block: string) => {
     if (Buffer.byteLength(block) > MAX_PI_INPUT_BYTES) reject();
@@ -111,7 +112,7 @@ export function createRunnerInput(
         paste = null;
         discarded = false;
         clear();
-        output.write("\n[pi-runner] input cleared\n");
+        output.write(`\n[${label}] input cleared\n`);
         onSubmit("/abort");
       } else if (paste === null) {
         paste = "";
@@ -659,7 +660,7 @@ export function parseRunnerArgs(argv: string[]): RunnerArgs {
   return args as RunnerArgs;
 }
 
-function resolveActivityEndpoint(env: NodeJS.ProcessEnv): { baseUrl: string; token: string } | null {
+export function resolveActivityEndpoint(env: NodeJS.ProcessEnv): { baseUrl: string; token: string } | null {
   let baseUrl = env.OPENRIG_URL?.trim() || null;
   let token = env.OPENRIG_ACTIVITY_HOOK_TOKEN?.trim() || null;
   if (!baseUrl && env.OPENRIG_PORT) {
