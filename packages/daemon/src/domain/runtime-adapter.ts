@@ -84,6 +84,13 @@ export const ATTENTION_REQUIRED_READINESS_CODES = new Set([
   // but adding it here keeps the two paths semantically aligned.
   "codex_auth_refusal",
   "codex_client_incompatible",
+  // Letta runner attention (letta-runner-protocol.ts): the seat cannot take a
+  // turn until an operator connects a provider, fixes the bound agent or
+  // conversation, or resolves an identity mismatch.
+  "letta_auth_required",
+  "letta_agent_missing",
+  "letta_conversation_missing",
+  "letta_identity_mismatch",
 ]);
 
 export function isAttentionRequiredReadinessCode(code: string | undefined): boolean {

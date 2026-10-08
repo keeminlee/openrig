@@ -339,6 +339,14 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
   if (!compactionResult.ok) {
     return { ok: false, errors: [compactionResult.error] };
   }
+  // Letta compacts server-side and owns the agent's memory: OpenRig must not
+  // manage its compaction or write a handover into it.
+  if (runtime === "letta" && compactionResult.strategy !== "default-compaction") {
+    return {
+      ok: false,
+      errors: [`runtime "letta" keeps continuity harness-native (Letta compacts server-side and owns the agent's memory): compactionStrategy must be "default-compaction" (alias "harness_native"), got "${compactionResult.strategy}"`],
+    };
+  }
   const mechanicResult = resolveContinuityMechanic(spec, profile, member);
   if (!mechanicResult.ok) {
     return { ok: false, errors: [mechanicResult.error] };

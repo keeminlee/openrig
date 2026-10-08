@@ -9,7 +9,9 @@
 // actually resume" probe is intentionally out of scope (heavy + must not
 // mutate live state); format validation is the safe, side-effect-free floor.
 
-export type ResumeType = "claude_id" | "codex_id" | "pi_session_file" | "omp_session_file";
+import { parseLettaResumeToken } from "../adapters/letta-runner-protocol.js";
+
+export type ResumeType = "claude_id" | "codex_id" | "pi_session_file" | "omp_session_file" | "letta_conversation";
 
 export interface ResumeTokenValidationOk {
   ok: true;
@@ -48,6 +50,7 @@ export function resumeTypeForRuntime(runtime: string | null): ResumeType | null 
   if (runtime === "codex") return "codex_id";
   if (runtime === "pi") return "pi_session_file";
   if (runtime === "omp") return "omp_session_file";
+  if (runtime === "letta") return "letta_conversation";
   return null;
 }
 
@@ -95,7 +98,7 @@ export function validateResumeToken(
   if (!resumeType) {
     return {
       ok: false,
-      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, pi, and omp have resume tokens).`,
+      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, pi, omp, and letta have resume tokens).`,
     };
   }
   if (typeof rawToken !== "string") {
@@ -107,6 +110,17 @@ export function validateResumeToken(
   }
   if (resumeType === "pi_session_file" || resumeType === "omp_session_file") {
     return validateSessionFileToken(resumeType, token);
+  }
+  if (resumeType === "letta_conversation") {
+    // Letta: "<agent_id>/<conversation_id>". The agent half is verified
+    // against system/init on resume; argv carries only the conversation.
+    if (token.length > MAX_TOKEN_LEN * 2) {
+      return { ok: false, error: `Letta conversation token is too long (max ${MAX_TOKEN_LEN * 2} characters).` };
+    }
+    if (!parseLettaResumeToken(token)) {
+      return { ok: false, error: "Letta conversation token must be '<agent_id>/<conversation_id>' (agent-<id>/conv-<id> or agent-<id>/local-conv-<n>)." };
+    }
+    return { ok: true, resumeType, token };
   }
   return validateIdShapedToken(resumeType, token);
 }
