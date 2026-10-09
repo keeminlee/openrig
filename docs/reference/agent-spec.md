@@ -366,11 +366,11 @@ version.
 
 | Category | Fields | Description |
 |----------|--------|-------------|
-| `skills` | `id`, `path` | Skill directories containing a SKILL.md. Projected by the runtime adapter: Claude to `<cwd>/.claude/skills/<id>`, Codex to `<cwd>/.agents/skills/<id>`, Pi and OMP to the seat's own agent directory under OpenRig's state. |
+| `skills` | `id`, `path` | Skill directories containing a SKILL.md. Projected by the runtime adapter: Claude to `<cwd>/.claude/skills/<id>`, Codex and Letta to `<cwd>/.agents/skills/<id>`, Pi and OMP to the seat's own agent directory under OpenRig's state. |
 | `guidance` | `id`, `path`, `target`*, `merge`* | Guidance files, merged as a managed block (see "Guidance Resources"). |
-| `subagents` | `id`, `path` | Subagent definitions. Claude copies them to `<cwd>/.claude/agents/`, Codex to `<cwd>/.agents/`; Pi and OMP don't project them. |
-| `plugins` | `id`, `source`, `plugin_type`* | Local plugin directories; selected with `uses.plugins`. `source.kind` must be `local`. `plugin_type` is `claude`, `codex` or `auto` (default): Claude projects a plugin to `<cwd>/.claude/plugins/<id>` when it is `claude`, or `auto` with a `.claude-plugin/plugin.json`; Codex projects to `<cwd>/.codex/plugins/<id>` when it is `codex`, or `auto` with a `.codex-plugin/plugin.json`. Pi and OMP don't project plugins. Neither Claude Code nor Codex reads skills from that plugin folder, so when a seat is instantiated a selected plugin's skills are also projected into the seat's skill folder (`.claude/skills/<name>` or `.agents/skills/<name>`) under their plain names. A folder already there with the same name, ignoring letter case, that OpenRig doesn't own is left alone; unless it already holds the same bytes, launch warns `plugin_skill_kept`. A skill the seat already selects by that name (from its profile, the System World or the project) keeps that source, an edited OpenRig-owned copy is kept with `plugin_skill_kept`, and if the plugin skills can't be projected the seat launches without them and warns `plugin_skills_not_projected`. Hooks ship inside plugins. |
-| `runtime_resources` | `id`, `path`, `runtime`, `type` | Runtime-specific resources. `runtime` and `type` are required. An entry whose `runtime` isn't the seat's runtime is skipped. Pi and OMP project none. |
+| `subagents` | `id`, `path` | Subagent definitions. Claude copies them to `<cwd>/.claude/agents/`, Codex to `<cwd>/.agents/`; Pi, OMP and Letta don't project them. |
+| `plugins` | `id`, `source`, `plugin_type`* | Local plugin directories; selected with `uses.plugins`. `source.kind` must be `local`. `plugin_type` is `claude`, `codex` or `auto` (default): Claude projects a plugin to `<cwd>/.claude/plugins/<id>` when it is `claude`, or `auto` with a `.claude-plugin/plugin.json`; Codex projects to `<cwd>/.codex/plugins/<id>` when it is `codex`, or `auto` with a `.codex-plugin/plugin.json`. Pi, OMP and Letta don't project plugins. Neither Claude Code nor Codex reads skills from that plugin folder, so when a seat is instantiated a selected plugin's skills are also projected into the seat's skill folder (`.claude/skills/<name>` or `.agents/skills/<name>`) under their plain names. A folder already there with the same name, ignoring letter case, that OpenRig doesn't own is left alone; unless it already holds the same bytes, launch warns `plugin_skill_kept`. A skill the seat already selects by that name (from its profile, the System World or the project) keeps that source, an edited OpenRig-owned copy is kept with `plugin_skill_kept`, and if the plugin skills can't be projected the seat launches without them and warns `plugin_skills_not_projected`. Hooks ship inside plugins. |
+| `runtime_resources` | `id`, `path`, `runtime`, `type` | Runtime-specific resources. `runtime` and `type` are required. An entry whose `runtime` isn't the seat's runtime is skipped. Pi and OMP project none; Letta projects only `letta_agent_binding`. |
 
 *Fields marked with `*` are optional.
 
@@ -379,6 +379,7 @@ Recognized runtime resource types:
 - `claude_mcp_fragment` — merge a JSON object into `<cwd>/.mcp.json`.
 - `claude_activity_hooks` — reconcile OpenRig's activity hooks into `<cwd>/.claude/settings.local.json`.
 - `codex_config_fragment` — upsert a TOML fragment into `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) inside an OpenRig-managed block.
+- `letta_agent_binding` — a JSON object naming the Letta agent a `runtime: letta` seat speaks as (`{"agent_id": "agent-…"}`, or `{"create_agent": true}` for a disposable agent). Copied into the seat's state directory; see [letta-runtime.md](letta-runtime.md).
 
 Unknown runtime resource types are still copied to the Claude or Codex runtime extension directory for agent-visible context.
 
@@ -436,7 +437,7 @@ guidance:
 |-------|------|----------|---------|-------------|
 | `id` | string | yes | — | Resource identifier. A `rig-role` guidance resource is never merged; deliver a role with a `send_text` startup file. |
 | `path` | string | yes | — | Relative path to the guidance file. |
-| `target` | string | no | — | Parsed but not used: the runtime decides the file. Claude merges into the rig's `managed_blocks` file (`CLAUDE.md` by default, or `CLAUDE.local.md`); Codex, Pi and OMP merge into `<cwd>/AGENTS.md`. |
+| `target` | string | no | — | Parsed but not used: the runtime decides the file. Claude merges into the rig's `managed_blocks` file (`CLAUDE.md` by default, or `CLAUDE.local.md`); Codex, Pi, OMP and Letta merge into `<cwd>/AGENTS.md`. |
 | `merge` | string | no | `managed_block` | Only `managed_block` is applied. Any other value, such as `append`, merges nothing. |
 
 ---
