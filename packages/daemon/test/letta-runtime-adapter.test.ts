@@ -98,19 +98,25 @@ afterEach(() => { if (savedYolo === undefined) delete process.env.OPENRIG_YOLO; 
 // ── binding resource ──────────────────────────────────────────────────────────
 
 describe("parseLettaAgentBinding", () => {
-  it("accepts bind (agent_id) and create (create_agent: true) with an optional permission mode", () => {
+  it("accepts bind (agent_id) and create (create_agent: true)", () => {
     expect(parseLettaAgentBinding(JSON.stringify({ agent_id: AGENT }))).toEqual({ ok: true, binding: { agentId: AGENT } });
-    expect(parseLettaAgentBinding(JSON.stringify({ create_agent: true, permission_mode: "acceptEdits" })))
-      .toEqual({ ok: true, binding: { createAgent: true, permissionMode: "acceptEdits" } });
+    expect(parseLettaAgentBinding(JSON.stringify({ create_agent: true }))).toEqual({ ok: true, binding: { createAgent: true } });
   });
 
-  it("refuses both, neither, a malformed agent id, a non-true create flag, an unknown mode, and non-JSON", () => {
+  it("refuses both, neither, a malformed agent id, a non-true create flag, and non-JSON", () => {
     expect(parseLettaAgentBinding(JSON.stringify({ agent_id: AGENT, create_agent: true })).ok).toBe(false);
     expect(parseLettaAgentBinding(JSON.stringify({})).ok).toBe(false);
     expect(parseLettaAgentBinding(JSON.stringify({ agent_id: "not-an-agent" })).ok).toBe(false);
     expect(parseLettaAgentBinding(JSON.stringify({ create_agent: "yes" })).ok).toBe(false);
-    expect(parseLettaAgentBinding(JSON.stringify({ agent_id: AGENT, permission_mode: "yolo" })).ok).toBe(false);
     expect(parseLettaAgentBinding("agent_id: x").ok).toBe(false);
+  });
+
+  it("refuses permission_mode in the binding and points at the member's permission_policy", () => {
+    for (const mode of ["unrestricted", "standard", "yolo"]) {
+      const result = parseLettaAgentBinding(JSON.stringify({ agent_id: AGENT, permission_mode: mode }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/permission_mode is not accepted.*permission_policy.*builtin:yolo/);
+    }
   });
 });
 
@@ -228,19 +234,42 @@ describe("LettaRuntimeAdapter.launchHarness", () => {
     expect(sendShellCommand).not.toHaveBeenCalled();
   });
 
-  it("permission posture: an attached policy is authoritative; without one YOLO lifts it, else the declared mode", async () => {
-    const run = async (declared: Record<string, unknown>, extra: Record<string, unknown>) => {
-      const fs = memFs({ [BINDING_PATH]: JSON.stringify({ agent_id: AGENT, ...declared }) });
+  it("permission posture comes from the resolved policy: full_bypass is unrestricted, auto and floor are standard", async () => {
+    const run = async (extra: Record<string, unknown>) => {
+      const fs = memFs({ [BINDING_PATH]: JSON.stringify({ agent_id: AGENT }) });
       const pane = startingPane(fs, { ready: true, agentId: AGENT, conversationId: CONV });
       await adapterWith(fs, mockTmux({ sendShellCommand: pane.sendShellCommand }))
         .launchHarness({ tmuxSession: SESSION, cwd: CWD, ...extra } as never, { name: SESSION });
       return pane.typed[0]!;
     };
-    expect(await run({}, { launchPosture: "full_bypass" })).toContain("--permission-mode 'unrestricted'");
-    expect(await run({ permission_mode: "unrestricted" }, { launchPosture: "floor" })).toContain("--permission-mode 'standard'");
-    expect(await run({ permission_mode: "acceptEdits" }, {})).toContain("--permission-mode 'acceptEdits'");
+    expect(await run({ launchPosture: "full_bypass" })).toContain("--permission-mode 'unrestricted'");
+    expect(await run({ launchPosture: "auto" })).toContain("--permission-mode 'standard'");
+    expect(await run({ launchPosture: "floor" })).toContain("--permission-mode 'standard'");
+    expect(await run({})).toContain("--permission-mode 'standard'");
+    // OPENRIG_YOLO applies only when no posture was resolved, as for Pi and OMP:
+    // a resolved floor stays the floor.
     process.env.OPENRIG_YOLO = "1";
-    expect(await run({}, {})).toContain("--permission-mode 'unrestricted'");
+    expect(await run({})).toContain("--permission-mode 'unrestricted'");
+    expect(await run({ launchPosture: "floor" })).toContain("--permission-mode 'standard'");
+  });
+
+  it("a fresh launch refuses a projected binding that still declares permission_mode, before typing anything", async () => {
+    const fs = memFs({ [BINDING_PATH]: JSON.stringify({ agent_id: AGENT, permission_mode: "unrestricted" }) });
+    const sendShellCommand = vi.fn(async () => ({ ok: true as const }));
+    const result = await adapterWith(fs, mockTmux({ sendShellCommand }))
+      .launchHarness({ tmuxSession: SESSION, cwd: CWD, launchPosture: "full_bypass" } as never, { name: SESSION });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/permission_policy/);
+    expect(sendShellCommand).not.toHaveBeenCalled();
+  });
+
+  it("resume takes its posture from the policy alone and never reads the binding", async () => {
+    const fs = memFs({ [BINDING_PATH]: JSON.stringify({ agent_id: AGENT, permission_mode: "unrestricted" }) });
+    const pane = startingPane(fs, { ready: true, agentId: AGENT, conversationId: CONV });
+    const result = await adapterWith(fs, mockTmux({ sendShellCommand: pane.sendShellCommand }))
+      .launchHarness({ tmuxSession: SESSION, cwd: CWD, launchPosture: "floor" } as never, { name: SESSION, resumeToken: TOKEN });
+    expect(result).toEqual({ ok: true, resumeToken: TOKEN, resumeType: "letta_conversation" });
+    expect(pane.typed[0]).toContain("--permission-mode 'standard'");
   });
 
   it("a runner that exits during this launch is attention_required with pane evidence", async () => {
