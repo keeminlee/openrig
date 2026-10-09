@@ -71,6 +71,9 @@ export interface LettaRunnerState {
   model?: string;
   /** Highest `event_seq` seen on the wire this launch (per-process counter). */
   lastEventSeq?: number;
+  /** Set when system/init does not have the shape this runner was built
+   *  against. Advisory only: identity was still verified. */
+  streamAdvisory?: string;
   /** Set when the runner raised an attention code the operator must clear. */
   attention?: LettaAttentionCode;
   updatedAt: string;
@@ -411,6 +414,23 @@ export function classifyLettaError(message: string): LettaAttentionCode {
   if (/agent[^\n]{0,80}not found|no agent (?:found|with id)/i.test(message)) return "letta_agent_missing";
   if (/conversation[^\n]{0,80}not found|no conversation (?:found|with id)/i.test(message)) return "letta_conversation_missing";
   return "runtime_error";
+}
+
+/** The system/init fields Letta Code 0.33.x-0.34.x declares as always present
+ *  (SystemInitMessage in dist/types/types/protocol.d.ts, identical in 0.33.3,
+ *  0.33.7 and 0.34.4). agent_id is typed nullable and is checked by
+ *  verifyLettaInit instead. The record carries no CLI version, so the runner
+ *  records none; a missing or retyped field is the only drift signal. */
+const LETTA_INIT_STRING_FIELDS = ["session_id", "uuid", "conversation_id", "model", "cwd", "permission_mode"] as const;
+const LETTA_INIT_ARRAY_FIELDS = ["tools", "mcp_servers", "slash_commands"] as const;
+
+/** Names of expected system/init fields that are missing or of another type.
+ *  Empty when the shape is the recognized one. */
+export function lettaInitShapeGaps(record: Record<string, unknown>): string[] {
+  return [
+    ...LETTA_INIT_STRING_FIELDS.filter((name) => typeof record[name] !== "string"),
+    ...LETTA_INIT_ARRAY_FIELDS.filter((name) => !Array.isArray(record[name])),
+  ];
 }
 
 /** Check system/init against what this launch was asked to open. */
