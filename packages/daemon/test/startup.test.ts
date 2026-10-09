@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { collectAllowlistedProviderAuthEnv, createDaemon } from "../src/startup.js";
+import { collectAllowlistedProviderAuthEnv, collectLettaLocatorEnv, createDaemon } from "../src/startup.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { coreSchema } from "../src/db/migrations/001_core_schema.js";
@@ -658,6 +658,68 @@ describe("createDaemon startup composition", () => {
     expect(collectAllowlistedProviderAuthEnv("ANTHROPIC_API_KEY", env)).toEqual({
       ANTHROPIC_API_KEY: "gateway-test-key",
     });
+  });
+
+  it("collectAllowlistedProviderAuthEnv admits Letta's key and endpoint for letta seats only, and only when named", () => {
+    const env = { LETTA_API_KEY: "synthetic-letta-key", LETTA_BASE_URL: "http://127.0.0.1:8283", ANTHROPIC_API_KEY: "a" };
+    expect(collectAllowlistedProviderAuthEnv("LETTA_API_KEY,LETTA_BASE_URL,ANTHROPIC_API_KEY", env, "letta")).toEqual(env);
+    expect(collectAllowlistedProviderAuthEnv("LETTA_API_KEY", env, "letta")).toEqual({ LETTA_API_KEY: "synthetic-letta-key" });
+    expect(collectAllowlistedProviderAuthEnv("LETTA_API_KEY,LETTA_BASE_URL", env)).toEqual({});
+    expect(collectAllowlistedProviderAuthEnv("LETTA_API_KEY,LETTA_BASE_URL", env, "omp")).toEqual({});
+    // The locator is not an auth variable: naming it admits nothing.
+    expect(collectAllowlistedProviderAuthEnv("LETTA_LOCAL_BACKEND_DIR", { LETTA_LOCAL_BACKEND_DIR: "/srv/letta" }, "letta")).toEqual({});
+  });
+
+  it("collectLettaLocatorEnv forwards only a non-empty LETTA_LOCAL_BACKEND_DIR", () => {
+    expect(collectLettaLocatorEnv({ LETTA_LOCAL_BACKEND_DIR: "/srv/letta", LETTA_API_KEY: "k", LETTA_BASE_URL: "u" }))
+      .toEqual({ LETTA_LOCAL_BACKEND_DIR: "/srv/letta" });
+    expect(collectLettaLocatorEnv({ LETTA_LOCAL_BACKEND_DIR: "" })).toEqual({});
+    expect(collectLettaLocatorEnv({})).toEqual({});
+  });
+
+  it("forwards Letta's variables into launched letta seats only: the locator always, the key and endpoint when named", async () => {
+    const launchCommands = async (allowlist: string) => {
+      vi.stubEnv("OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST", allowlist);
+      vi.stubEnv("LETTA_LOCAL_BACKEND_DIR", "/srv/letta-backend");
+      vi.stubEnv("LETTA_API_KEY", "synthetic-letta-key");
+      vi.stubEnv("LETTA_BASE_URL", "http://127.0.0.1:8283");
+      const cmuxFactory: CmuxTransportFactory = async () => {
+        throw Object.assign(new Error(""), { code: "ENOENT" });
+      };
+      const tmuxExec = vi.fn<ExecFn>(async () => "");
+      const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
+      try {
+        const rig = deps.rigRepo.createRig("letta-env-rig");
+        deps.rigRepo.addNode(rig.id, "letta-worker", { runtime: "letta" });
+        deps.rigRepo.addNode(rig.id, "claude-worker", { runtime: "claude-code" });
+        const commandFor = async (logicalId: string) => {
+          const result = await deps.nodeLauncher.launchNode(rig.id, logicalId);
+          expect(result.ok).toBe(true);
+          if (!result.ok) return "";
+          return tmuxExec.mock.calls.map((call) => call[0])
+            .find((cmd) => cmd.includes("tmux new-session") && cmd.includes(result.sessionName)) ?? "";
+        };
+        return { letta: await commandFor("letta-worker"), claude: await commandFor("claude-worker") };
+      } finally {
+        db.close();
+      }
+    };
+
+    try {
+      const optedIn = await launchCommands("LETTA_API_KEY,LETTA_BASE_URL");
+      expect(optedIn.letta).toContain("-e 'LETTA_LOCAL_BACKEND_DIR=/srv/letta-backend'");
+      expect(optedIn.letta).toContain("-e 'LETTA_API_KEY=synthetic-letta-key'");
+      expect(optedIn.letta).toContain("-e 'LETTA_BASE_URL=http://127.0.0.1:8283'");
+      expect(optedIn.claude).toContain("tmux new-session");
+      expect(optedIn.claude).not.toContain("LETTA_");
+
+      const notNamed = await launchCommands("");
+      expect(notNamed.letta).toContain("-e 'LETTA_LOCAL_BACKEND_DIR=/srv/letta-backend'");
+      expect(notNamed.letta).not.toContain("LETTA_API_KEY");
+      expect(notNamed.letta).not.toContain("LETTA_BASE_URL");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("createDaemon wires node cmux service for POST /api/rigs/:rigId/nodes/:logicalId/open-cmux", async () => {
