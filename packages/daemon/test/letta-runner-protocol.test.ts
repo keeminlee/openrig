@@ -17,7 +17,7 @@ import {
   buildLettaChildArgs, buildLettaChildEnv, buildLettaRunnerCommand, classifyLettaError, classifyLettaExit,
   classifyLettaRecord, encodeLettaInterrupt, encodeLettaToolDenial, encodeLettaUserTurn, formatLettaResumeToken,
   mapLettaEvent, parseLettaLine, parseLettaResumeToken, parseLettaRunnerState, verifyLettaInit,
-  buildPendingLettaRunnerState, lettaSeatPaths,
+  buildPendingLettaRunnerState, lettaSeatPaths, lettaInitShapeGaps,
   type LettaEvent,
 } from "../src/adapters/letta-runner-protocol.js";
 
@@ -36,6 +36,14 @@ describe("classifyLettaRecord on recorded stream-json", () => {
     expect(init).toEqual({
       kind: "init", agentId: AGENT, conversationId: "local-conv-4", model: "openai-codex/gpt-5.5", mcpServers: [],
     });
+  });
+
+  it("recognizes the recorded system/init shape and names fields that drift", () => {
+    for (const name of ["turn-success.jsonl", "queued-batch-error.jsonl", "provider-not-configured.jsonl"]) {
+      expect(lettaInitShapeGaps(fixture(name)[0]!)).toEqual([]);
+    }
+    const { session_id: _s, tools: _t, ...drifted } = fixture("turn-success.jsonl")[0]!;
+    expect(lettaInitShapeGaps({ ...drifted, permission_mode: null })).toEqual(["session_id", "permission_mode", "tools"]);
   });
 
   it("accumulated assistant chunks equal the result text", () => {

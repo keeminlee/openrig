@@ -342,6 +342,12 @@ describe("LettaRuntimeAdapter.checkReady", () => {
     expect(await check({ ready: true, agentId: AGENT, conversationId: CONV })).toEqual({ ready: true });
   });
 
+  it("an unrecognized stream shape stays ready and carries the advisory as the reason", async () => {
+    const advisory = "system/init shape not recognized (missing or retyped: tools)";
+    expect(await check({ ready: true, agentId: AGENT, conversationId: CONV, streamAdvisory: advisory }))
+      .toEqual({ ready: true, reason: `letta-runner advisory: ${advisory}` });
+  });
+
   it("a ready sidecar with the pane back at a shell is runner_exited", async () => {
     expect((await check({ ready: true }, { paneCommand: "bash" })).code).toBe("runner_exited");
   });

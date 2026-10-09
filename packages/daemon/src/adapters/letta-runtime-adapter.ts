@@ -360,7 +360,8 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
       if (atShell) {
         return { ready: false, reason: "letta-runner sidecar says ready but the pane is back at a shell (runner process gone)", code: "runner_exited" };
       }
-      return { ready: true };
+      // An unrecognized stream shape is advisory, never a readiness failure.
+      return state.streamAdvisory ? { ready: true, reason: `letta-runner advisory: ${state.streamAdvisory}` } : { ready: true };
     }
     const paneContent = (await this.tmux.capturePaneContent(binding.tmuxSession, 40)) ?? "";
     if (paneContent.includes("[letta-runner] ERROR")) {
