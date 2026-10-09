@@ -256,8 +256,8 @@ export function encodeLettaInterrupt(requestId: string): string {
 }
 
 /** Answer a `can_use_tool` request. The pane cannot approve interactively,
- *  so the runner denies and interrupts; the operator re-sends or changes the
- *  seat's permission mode. */
+ *  so the runner denies and interrupts; the operator re-sends, or attaches a
+ *  full_bypass permission_policy (builtin:yolo) to the seat. */
 export function encodeLettaToolDenial(requestId: string, message: string): string {
   return `${JSON.stringify({
     type: "control_response",
@@ -467,7 +467,7 @@ export function mapLettaEvent(event: LettaEvent): LettaMirrorAndActivity {
       return { mirrorLines: [`  ⚙ ${event.toolName} …`], activity: { hookEvent: "PreToolUse", subtype: event.toolName } };
     case "approval_requested":
       return {
-        mirrorLines: [`${LETTA_RUNNER_ERROR_MARKER} approval requested for ${event.toolName}; denied because the managed pane cannot answer it. Re-send a safe instruction or change the seat's permission mode.`],
+        mirrorLines: [`${LETTA_RUNNER_ERROR_MARKER} approval requested for ${event.toolName}; denied because the managed pane cannot answer it. Re-send a safe instruction, or attach permission_policy builtin:yolo to the seat to let it run tools unattended.`],
         activity: { hookEvent: "Notification", subtype: "permission_prompt" },
         attention: "letta_approval_pending",
       };

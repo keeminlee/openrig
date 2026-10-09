@@ -27,10 +27,20 @@
 //                                  over the agent's other rooms.
 //   { "create_agent": true }       create: a disposable new agent. Explicit
 //                                  opt-in only; the member's `model` applies.
-// and optionally "permission_mode" (standard | acceptEdits | unrestricted |
-// strict), used only when no permission policy is attached to the seat.
 // project() copies the binding into the seat state dir; launchHarness reads it
 // from there. Resume never needs it: the token carries the conversation.
+//
+// Permission posture is NOT part of the binding. It comes from the member's
+// (or rig's) permission_policy, like every other runtime: a full_bypass
+// posture (builtin:yolo, or a custom flag policy) launches Letta with
+// `--permission-mode unrestricted`; auto and floor launch `standard`. With no
+// resolved posture, OPENRIG_YOLO lifts the seat as it does for Pi and OMP.
+// A `standard` seat's tool approvals cannot be answered from the managed pane,
+// so the runner denies each one and reports it. A binding that still carries
+// "permission_mode" is refused at parse time: OpenRig resolves a posture for
+// every seat (the floor when no policy is attached), so the adapter cannot
+// tell "no policy" from "a policy chose the floor", and a binding-level mode
+// would either never apply or override a policy that deliberately chose floor.
 //
 // Resume token: resumeType "letta_conversation", token
 // "<agent_id>/<conversation_id>". Resume relaunches with `--conversation C`
@@ -64,7 +74,7 @@ import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import {
   lettaSeatPaths, parseLettaRunnerState, buildLettaRunnerCommand, buildPendingLettaRunnerState,
   parseLettaResumeToken, formatLettaResumeToken, isLettaAgentId,
-  LETTA_RESUME_TYPE, LETTA_PERMISSION_MODES,
+  LETTA_RESUME_TYPE,
   type LettaRunnerState, type LettaLaunchMode, type LettaPermissionMode, type LettaAttentionCode,
 } from "./letta-runner-protocol.js";
 
@@ -86,7 +96,6 @@ const BLOCKING_ATTENTION: ReadonlySet<LettaAttentionCode> = new Set([
 export interface LettaAgentBinding {
   agentId?: string;
   createAgent?: true;
-  permissionMode?: LettaPermissionMode;
 }
 
 /** Parse a letta_agent_binding resource. Exactly one of agent_id / create_agent. */
@@ -101,6 +110,12 @@ export function parseLettaAgentBinding(raw: string): { ok: true; binding: LettaA
     return { ok: false, error: "letta agent binding must be a JSON object" };
   }
   const obj = parsed as Record<string, unknown>;
+  if (obj["permission_mode"] !== undefined) {
+    return {
+      ok: false,
+      error: "letta agent binding: permission_mode is not accepted; set permission_policy on the rig member instead (builtin:yolo lets a Letta seat run tools unattended; without it, tool approvals are denied)",
+    };
+  }
   const hasAgent = obj["agent_id"] !== undefined;
   const create = obj["create_agent"] === true;
   if (obj["create_agent"] !== undefined && obj["create_agent"] !== true) {
@@ -117,13 +132,6 @@ export function parseLettaAgentBinding(raw: string): { ok: true; binding: LettaA
     binding.agentId = obj["agent_id"];
   } else {
     binding.createAgent = true;
-  }
-  if (obj["permission_mode"] !== undefined) {
-    const mode = obj["permission_mode"];
-    if (typeof mode !== "string" || !(LETTA_PERMISSION_MODES as readonly string[]).includes(mode)) {
-      return { ok: false, error: `letta agent binding: permission_mode must be one of ${LETTA_PERMISSION_MODES.join(", ")}` };
-    }
-    binding.permissionMode = mode as LettaPermissionMode;
   }
   return { ok: true, binding };
 }
@@ -269,22 +277,16 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
 
     const sessionName = binding.tmuxSession;
     let mode: LettaLaunchMode;
-    let declared: LettaAgentBinding | null = null;
     if (opts.resumeToken) {
       const validation = validateResumeToken(this.runtime, opts.resumeToken);
       if (!validation.ok) return { ok: false, error: `letta resume: ${validation.error}` };
       const parsed = parseLettaResumeToken(validation.token)!;
       mode = { kind: "resume", conversationId: parsed.conversationId, expectAgentId: parsed.agentId };
-      // The permission mode a resume uses still comes from the seat's binding
-      // when one was projected; a resume does not require it.
-      const read = this.readAgentBinding(sessionName);
-      if (read.ok) declared = read.binding;
     } else {
       const read = this.readAgentBinding(sessionName);
       if (!read.ok) return { ok: false, error: `letta launch: ${read.error}` };
-      declared = read.binding;
-      mode = declared.agentId
-        ? { kind: "bind", agentId: declared.agentId }
+      mode = read.binding.agentId
+        ? { kind: "bind", agentId: read.binding.agentId }
         : { kind: "create", allowCreateAgent: true };
     }
 
@@ -300,7 +302,7 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
       stateRoot: this.stateRoot,
       cwd: binding.cwd,
       launchId,
-      permissionMode: this.permissionMode(binding, declared),
+      permissionMode: this.permissionMode(binding),
       mode,
       model: binding.model,
     });
@@ -395,13 +397,12 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
     return parseLettaAgentBinding(this.fs.readFile(path));
   }
 
-  private permissionMode(binding: NodeBinding, declared: LettaAgentBinding | null): LettaPermissionMode {
-    // An attached permission policy is authoritative for the seat; without
-    // one, OPENRIG_YOLO lifts it, else the binding's declared mode or the
-    // conservative floor. Never ambient.
-    if (binding.launchPosture) return binding.launchPosture === "full_bypass" ? "unrestricted" : "standard";
-    if (yoloEnabled(process.env)) return "unrestricted";
-    return declared?.permissionMode ?? "standard";
+  private permissionMode(binding: NodeBinding): LettaPermissionMode {
+    // Always explicit, never ambient. A resolved posture is authoritative in
+    // both directions (full_bypass -> unrestricted; auto and floor ->
+    // standard, since Letta has no auto mode); with none, OPENRIG_YOLO decides,
+    // exactly as for Pi and OMP.
+    return yoloEnabled(process.env, binding.launchPosture) ? "unrestricted" : "standard";
   }
 
   private readRunnerState(sessionName: string): LettaRunnerState | null {
