@@ -43,6 +43,7 @@ import { prepareCodexTeamWorkspace } from "./domain/codex-team-workspace.js";
 import { PiResumeAdapter } from "./adapters/pi-resume.js";
 import { OmpResumeAdapter } from "./adapters/omp-resume.js";
 import { OMP_PROVIDER_ENV_VARS, OMP_PROVIDER_EXTRA_ENV_VARS } from "./adapters/pi-runner-protocol.js";
+import { LETTA_AUTH_ENV_VARS, LETTA_LOCATOR_ENV_VARS } from "./adapters/letta-runner-protocol.js";
 import { RigSpecExporter } from "./domain/rigspec-exporter.js";
 import { PodRepository } from "./domain/pod-repository.js";
 import { RigSpecPreflight } from "./domain/rigspec-preflight.js";
@@ -264,22 +265,44 @@ const OMP_PROVIDER_AUTH_ENV: Record<string, true> = Object.fromEntries(
   ].map((name) => [name, true as const]),
 );
 
+// Letta seats: a Letta server key and the endpoint it is valid for, taken from
+// the runner's own child-env allowlist. Admitted only into letta seats' launch
+// env, and only when the operator names them (double opt-in, as for OMP).
+const LETTA_PROVIDER_AUTH_ENV: Record<string, true> = Object.fromEntries(
+  LETTA_AUTH_ENV_VARS.map((name) => [name, true as const]),
+);
+
 export function collectAllowlistedProviderAuthEnv(
   raw: string | null | undefined,
   env: Record<string, string | undefined>,
-  runtime?: "omp",
+  runtime?: "omp" | "letta",
 ): Record<string, string> {
-  const admitOmp = runtime === "omp";
+  const runtimeAuthEnv = runtime === "omp" ? OMP_PROVIDER_AUTH_ENV : runtime === "letta" ? LETTA_PROVIDER_AUTH_ENV : undefined;
   const out: Record<string, string> = {};
   for (const item of (raw ?? "").split(",")) {
     const name = item.trim();
     if (!name) continue;
     if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) continue;
-    if (!KNOWN_PROVIDER_AUTH_ENV.has(name) && !(admitOmp && Object.hasOwn(OMP_PROVIDER_AUTH_ENV, name))) continue;
+    if (!KNOWN_PROVIDER_AUTH_ENV.has(name) && !(runtimeAuthEnv && Object.hasOwn(runtimeAuthEnv, name))) continue;
     const value = env[name];
     if (typeof value === "string" && value.length > 0) {
       out[name] = value;
     }
+  }
+  return out;
+}
+
+/** Letta's non-secret locator (LETTA_LOCAL_BACKEND_DIR) from the daemon's
+ *  environment, for letta seats only. It is a folder path, not a credential,
+ *  so it is not gated by recovery.provider_auth_env_allowlist; like CODEX_HOME
+ *  it tells the seat's CLI which local state the operator chose. Without it a
+ *  seat opens Letta's default backend folder, where a bound agent may not
+ *  exist. */
+export function collectLettaLocatorEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of LETTA_LOCATOR_ENV_VARS) {
+    const value = env[name];
+    if (typeof value === "string" && value.length > 0) out[name] = value;
   }
   return out;
 }
@@ -547,10 +570,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     startupSettings.recoveryProviderAuthEnvAllowlistRaw,
     process.env,
   );
-  // OMP's extra provider keys reach OMP seats only (fresh launch and handover
-  // successors); every other runtime's seat env is unchanged.
+  // OMP's extra provider keys reach OMP seats only, and Letta's variables reach
+  // letta seats only (fresh launch and handover successors); every other
+  // runtime's seat env is unchanged.
   const runtimeSessionEnv: Record<string, Record<string, string | undefined>> = {
     omp: collectAllowlistedProviderAuthEnv(startupSettings.recoveryProviderAuthEnvAllowlistRaw, process.env, "omp"),
+    letta: {
+      ...collectAllowlistedProviderAuthEnv(startupSettings.recoveryProviderAuthEnvAllowlistRaw, process.env, "letta"),
+      ...collectLettaLocatorEnv(process.env),
+    },
   };
   const transcriptStore = new TranscriptStore({
     enabled: transcriptsEnabled,
