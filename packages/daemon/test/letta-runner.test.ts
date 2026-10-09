@@ -60,6 +60,21 @@ describe("LettaRunnerCore on a recorded successful turn", () => {
       eventFamily: "session_identity", runtime: "letta", sessionId: "local-conv-4",
       resumeType: "letta_conversation", resumeToken: `${AGENT}/local-conv-4`,
     });
+    expect(t.sidecars.at(-1)?.streamAdvisory).toBeUndefined();
+    expect(t.mirror.some((l) => l.includes("note: system/init"))).toBe(false);
+  });
+
+  it("an unrecognized system/init shape is an advisory, not a failure: still ready, still verified", () => {
+    const t = core();
+    const [init] = lines("turn-success.jsonl");
+    const { tools: _tools, slash_commands: _slash, ...rest } = JSON.parse(init!) as Record<string, unknown>;
+    t.core.handleLine(JSON.stringify(rest));
+    expect(t.core.isReady()).toBe(true);
+    const advisory = t.sidecars.at(-1)?.streamAdvisory;
+    expect(advisory).toMatch(/system\/init shape not recognized \(missing or retyped: tools, slash_commands\)/);
+    expect(t.sidecars.at(-1)).toMatchObject({ ready: true, agentId: AGENT, conversationId: "local-conv-4" });
+    expect(t.mirror).toContain(`[letta-runner] note: ${advisory}`);
+    expect(t.activity[0]).toMatchObject({ eventFamily: "session_identity", resumeToken: `${AGENT}/local-conv-4` });
   });
 
   it("sends one user line per turn and holds the next until result", () => {

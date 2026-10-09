@@ -27,7 +27,7 @@ import { pathToFileURL } from "node:url";
 import { createRunnerInput, resolveActivityEndpoint } from "./pi-runner.js";
 import {
   lettaSeatPaths, buildLettaChildArgs, buildLettaChildEnv, buildPendingLettaRunnerState,
-  classifyLettaRecord, classifyLettaExit, mapLettaEvent, parseLettaLine, verifyLettaInit,
+  classifyLettaRecord, classifyLettaExit, mapLettaEvent, parseLettaLine, verifyLettaInit, lettaInitShapeGaps,
   encodeLettaUserTurn, encodeLettaInterrupt, encodeLettaToolDenial, formatLettaResumeToken,
   LETTA_RUNNER_READY_MARKER, LETTA_RUNNER_EXIT_MARKER, LETTA_RUNNER_ERROR_MARKER, LETTA_RESUME_TYPE,
   LETTA_PERMISSION_MODES,
@@ -68,6 +68,7 @@ export class LettaRunnerCore {
   private conversationId: string | undefined;
   private model: string | undefined;
   private lastEventSeq: number | undefined;
+  private streamAdvisory: string | undefined;
   private attention: LettaAttentionCode | undefined;
   private pending: string[] = [];
   private turnInFlight = false;
@@ -131,7 +132,7 @@ export class LettaRunnerCore {
 
     switch (event.kind) {
       case "init":
-        this.handleInit(event);
+        this.handleInit(event, record);
         return;
       case "assistant_chunk":
         this.streamedText += event.text;
@@ -218,7 +219,17 @@ export class LettaRunnerCore {
     this.io.postActivity(this.activityPayload("Stop", "letta_exited"));
   }
 
-  private handleInit(event: { agentId: string | null; conversationId: string | null; model: string | null }): void {
+  private handleInit(
+    event: { agentId: string | null; conversationId: string | null; model: string | null },
+    record: Record<string, unknown>,
+  ): void {
+    // Never a hard failure: identity is verified below either way. A shape
+    // drift is recorded so an operator can see why later events may misparse.
+    const gaps = lettaInitShapeGaps(record);
+    if (gaps.length > 0) {
+      this.streamAdvisory = `system/init shape not recognized (missing or retyped: ${gaps.join(", ")}); this runner was built against Letta Code 0.33-0.34 stream-json`;
+      this.io.mirrorLine(`[letta-runner] note: ${this.streamAdvisory}`);
+    }
     const verdict = verifyLettaInit(this.mode, event);
     if (!verdict.ok) {
       this.ready = false;
@@ -334,6 +345,7 @@ export class LettaRunnerCore {
       conversationId: this.conversationId,
       model: this.model,
       lastEventSeq: this.lastEventSeq,
+      streamAdvisory: this.streamAdvisory,
       attention: this.attention,
       updatedAt: this.io.now(),
       ...patch,
