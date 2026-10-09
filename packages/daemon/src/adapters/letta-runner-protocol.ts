@@ -193,9 +193,16 @@ const LETTA_ENV_OPENRIG_VARS = [
   "OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_RUNTIME", "OPENRIG_OCCUPANT_GENERATION",
   "OPENRIG_HOME", "OPENRIG_URL", "OPENRIG_HOST", "OPENRIG_PORT", "OPENRIG_SHARED_DOCS_ROOT",
 ] as const;
-/** Letta's own locators. Provider credentials for the local backend live in
+/** A Letta server credential and the endpoint it is valid for. The daemon
+ *  admits these into a letta seat only when the operator names them in
+ *  recovery.provider_auth_env_allowlist. */
+export const LETTA_AUTH_ENV_VARS = ["LETTA_BASE_URL", "LETTA_API_KEY"] as const;
+/** Non-secret locators: which local backend folder (and so which agents and
+ *  provider logins) the CLI opens. The daemon forwards its own value. */
+export const LETTA_LOCATOR_ENV_VARS = ["LETTA_LOCAL_BACKEND_DIR"] as const;
+/** Letta's own variables. Provider credentials for the local backend live in
  *  the backend folder, not the environment; no other secret crosses. */
-const LETTA_ENV_RUNTIME_VARS = ["LETTA_LOCAL_BACKEND_DIR", "LETTA_BASE_URL", "LETTA_API_KEY"] as const;
+const LETTA_ENV_RUNTIME_VARS = [...LETTA_LOCATOR_ENV_VARS, ...LETTA_AUTH_ENV_VARS] as const;
 
 export function buildLettaChildEnv(source: Record<string, string | undefined>): Record<string, string> {
   const env: Record<string, string> = {};
