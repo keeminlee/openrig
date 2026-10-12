@@ -1,5 +1,10 @@
 # Letta Runtime Reference (`runtime: letta`)
 
+> **Provenance: this runtime is not part of upstream OpenRig.** It was built by Jetto (Starforge R&D, Exp 03,
+> 2026-10-08/09) on the local `letta-runtime` branch and runs only in Starforge's own build. Findings were shared
+> in mvschwarz/openrig discussion #43, but the code has not been reviewed or adopted upstream. Its design choices
+> (below, especially **Continuity**) are Starforge's, not OpenRig doctrine.
+
 Version: 1 (v1 transport: headless Letta Code stream-json)
 Last validated against code: 2026-10-09, on the `letta-runtime` branch at `c529f98b` (on top of 0.6.7 `2caac7dd`)
 Source of truth: `packages/daemon/src/adapters/letta-runtime-adapter.ts`, `packages/daemon/src/adapters/letta-runner.ts`, `packages/daemon/src/adapters/letta-runner-protocol.ts`, `packages/daemon/src/startup.ts`, `packages/daemon/src/domain/profile-resolver.ts`, `packages/daemon/src/domain/resume-token-validation.ts`
@@ -197,7 +202,9 @@ logins in its backend folder.
 - **`send_text`** startup files are sent through the runner as one turn each.
 - **Not projected in v1:** plugins, subagents, hooks and MCP servers (reported as skipped), and runtime
   resources other than `letta_agent_binding`.
-- **Continuity** is Letta's: Letta compacts server-side and owns the agent's memory. Only
+- **Continuity** is Letta's, by our design choice: Letta Code compacts the conversation itself (with a local
+  backend that is the `letta` process, not a server) and owns the agent's memory (MemFS and its reflection
+  subagents). OpenRig must not write a Meep's memory, so only
   `compaction_strategy: default-compaction` (alias `harness_native`) is accepted; `managed-compaction`,
   `handover` and `apprentice-handover` are refused for letta members.
 
