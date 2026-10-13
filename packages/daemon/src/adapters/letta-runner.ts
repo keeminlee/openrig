@@ -45,8 +45,17 @@ export interface LettaRunnerIo {
   writeSidecar(state: LettaRunnerState): void;
   /** Terminate the child when its identity cannot be trusted. */
   stopChild?(): void;
+  /** Stop the child so the entry can start a fresh one that resumes the same conversation (see requestRestart). */
+  restartChild?(): void;
   now(): string;
 }
+
+/** How long a turn may sit after an error record with no further record and no `result` before the runner treats
+ *  the child as wedged. Letta Code retries transient errors itself, so this waits out its backoff. */
+export const LETTA_ERROR_STALL_MS = 60_000;
+/** The error a child gives when the conversation still holds a run that never closed (a provider timeout's
+ *  aborted request, 2026-10-13): no turn can start until a fresh process takes the conversation. */
+const LETTA_DEAD_RUN = /already has an active run/i;
 
 export interface LettaTurnSummary {
   /** Concatenated assistant_message chunks. */
@@ -64,6 +73,10 @@ function notificationSubtype(code: LettaAttentionCode): string {
 export class LettaRunnerCore {
   private ready = false;
   private exited = false;
+  /** A restart is under way: the child's exit is not the runner's end, and the queue is kept for the next one. */
+  private restarting = false;
+  private lastRecordMs = 0;
+  private errorAtMs: number | null = null;
   private agentId: string | undefined;
   private conversationId: string | undefined;
   private model: string | undefined;
@@ -90,6 +103,40 @@ export class LettaRunnerCore {
 
   isReady(): boolean { return this.ready; }
   isTurnInFlight(): boolean { return this.turnInFlight; }
+  isRestarting(): boolean { return this.restarting; }
+  /** The conversation (and agent) a restart resumes: the ones this child reported at init. */
+  resumeTarget(): { conversationId: string; agentId?: string } | null {
+    return this.conversationId ? { conversationId: this.conversationId, ...(this.agentId ? { agentId: this.agentId } : {}) } : null;
+  }
+
+  /**
+   * The clock's check (the entry calls it every few seconds): a turn that errored and has had no record since for
+   * LETTA_ERROR_STALL_MS, and no `result`, is wedged; restart the child (10-13: Bevel held 7 inputs behind one).
+   */
+  tick(nowMs: number): void {
+    if (!this.turnInFlight || this.errorAtMs === null || this.restarting) return;
+    if (nowMs - Math.max(this.errorAtMs, this.lastRecordMs) >= LETTA_ERROR_STALL_MS) {
+      this.requestRestart(`no result ${Math.round(LETTA_ERROR_STALL_MS / 1000)} s after an error`);
+    }
+  }
+
+  /**
+   * End the wedged turn and ask the entry for a fresh child in the same conversation. The queued inputs are kept
+   * and go to the new child once it is ready; the turn in flight is lost (its error is already on the pane).
+   */
+  requestRestart(reason: string): void {
+    if (this.restarting || this.exited || !this.io.restartChild || !this.conversationId) return;
+    this.restarting = true;
+    this.ready = false;
+    this.turnInFlight = false;
+    this.lastResult = "error";
+    this.attention = undefined;
+    this.writeSidecar({});
+    this.io.mirrorLine(`${LETTA_RUNNER_ERROR_MARKER} ${reason}; restarting letta in the same conversation (${this.pending.length} queued input(s) kept)`);
+    // the turn is over and input is taken (it queues until the fresh child is ready): idle, not waiting on a person
+    this.io.postActivity(this.activityPayload("Stop", "result_error_restart"));
+    this.io.restartChild();
+  }
   queuedCount(): number { return this.pending.length; }
   lastTurn(): LettaTurnSummary | null { return this.lastTurnSummary; }
 
@@ -125,6 +172,7 @@ export class LettaRunnerCore {
       return;
     }
     const record = parsed.record;
+    this.lastRecordMs = Date.parse(this.io.now()) || Date.now();
     if (typeof record.event_seq === "number" && (this.lastEventSeq === undefined || record.event_seq > this.lastEventSeq)) {
       this.lastEventSeq = record.event_seq;
     }
@@ -186,10 +234,21 @@ export class LettaRunnerCore {
     }
     if (mapped.attention) this.raiseAttention(mapped.attention);
     else if (mapped.activity) this.io.postActivity(this.activityPayload(mapped.activity.hookEvent, mapped.activity.subtype));
+    // An error inside a turn starts the stall clock (tick); a dead run can never close, so restart at once.
+    if (this.turnInFlight && (event.kind === "error" || mapped.errorNotice)) {
+      this.errorAtMs = this.lastRecordMs;
+      const text = `${event.kind === "error" ? event.message : ""} ${mapped.errorNotice ?? ""}`;
+      if (LETTA_DEAD_RUN.test(text)) this.requestRestart("the conversation still holds a run that never closed");
+    }
   }
 
   /** Child process exit — the last `result` outranks the exit code. */
   handleChildExit(code: number | null): void {
+    if (this.restarting) {
+      // asked for: not the runner's end. The queue waits for the fresh child's READY.
+      this.io.mirrorLine(`[letta-runner] letta stopped for a restart (code ${code ?? "unknown"})`);
+      return;
+    }
     if (this.exited) return;
     this.exited = true;
     const outcome = classifyLettaExit({ code, turnInFlight: this.turnInFlight, lastResult: this.lastResult });
@@ -244,6 +303,9 @@ export class LettaRunnerCore {
     this.conversationId = event.conversationId!;
     this.model = event.model ?? undefined;
     this.ready = true;
+    const restarted = this.restarting;
+    this.restarting = false;   // a fresh child is up: the restart, if any, is done
+    this.errorAtMs = null;
     this.writeSidecar({});
     this.io.mirrorLine(`${LETTA_RUNNER_READY_MARKER} agent=${this.agentId} conversation=${this.conversationId}${this.model ? ` model=${this.model}` : ""}`);
     this.io.postActivity({
@@ -262,6 +324,8 @@ export class LettaRunnerCore {
       occurredAt: this.io.now(),
     });
     this.pump();
+    // after a restart with nothing queued, say plainly the seat is idle and takes input
+    if (restarted && !this.turnInFlight) this.io.postActivity(this.activityPayload("Stop", "restarted_idle"));
   }
 
   private handleResult(
@@ -285,6 +349,11 @@ export class LettaRunnerCore {
     // record; a generic result/error only raises one if none is set.
     if (mapped.attention && !this.attention) this.attention = mapped.attention;
     this.turnInFlight = false;
+    // A plain runtime error (a provider timeout, 10-13) ended the turn, and the runner takes the next input: the seat
+    // is idle, not waiting on a person. Reported as needs_input it made `rig send` refuse ("interactive prompt; pane
+    // unrecognized": Rivet 05:14Z). The ERROR line stays on the pane for the lead watch. Auth, identity and
+    // approval attentions do need a person, and stay.
+    if (this.attention === "runtime_error") this.attention = undefined;
     this.writeSidecar({});
     if (this.attention) {
       // The turn ended but the operator must act: the final state is the
@@ -304,6 +373,7 @@ export class LettaRunnerCore {
     this.turnInFlight = true;
     this.turnActivePosted = false;
     this.turnErrorShown = false;
+    this.errorAtMs = null;
     this.streamedText = "";
     this.attention = undefined;
     this.io.writeStdin(encodeLettaUserTurn(block));
@@ -495,7 +565,7 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
   console.log(`[letta-runner] starting letta ${args.mode.kind} (seat ${args.sessionName}, permission mode ${args.permissionMode})`);
   console.log(`[letta-runner] send text normally; one message per turn (later input waits for the turn to finish); "/abort" interrupts`);
 
-  const child = spawnChild(childArgs, { cwd: args.cwd, env: childEnv });
+  let child = spawnChild(childArgs, { cwd: args.cwd, env: childEnv });
   const io: LettaRunnerIo = {
     writeStdin: (line) => {
       try { child.stdin.write(line); } catch { /* exit handler reports */ }
@@ -517,6 +587,8 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
       try { fs.writeFileSync(paths.runnerStatePath, JSON.stringify(state)); } catch { /* best-effort */ }
     },
     stopChild: () => { child.kill(); },
+    // the exit handler below sees the core restarting and starts the fresh child
+    restartChild: () => { child.kill(); },
     now: () => new Date().toISOString(),
   };
 
@@ -526,12 +598,28 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
   }, args.mode);
 
   const input = createRunnerInput(process.stdin, process.stdout, (block) => core.handleUserBlock(block), "letta-runner");
-  attachLettaChild(child, core, io.mirrorLine, (code) => {
+  const onExit = (code: number | null) => {
+    if (core.isRestarting()) {
+      // a restart the core asked for (a wedged turn): a fresh child resuming the same conversation
+      const target = core.resumeTarget();
+      if (target) {
+        const resume: LettaLaunchMode = { kind: "resume", conversationId: target.conversationId, ...(target.agentId ? { expectAgentId: target.agentId } : {}) };
+        io.mirrorLine(`[letta-runner] starting letta resume (conversation ${target.conversationId}) after a restart`);
+        child = spawnChild(buildLettaChildArgs({ mode: resume, permissionMode: args.permissionMode, model: args.model }), { cwd: args.cwd, env: childEnv });
+        attachLettaChild(child, core, io.mirrorLine, onExit);
+        return;
+      }
+    }
+    clearInterval(clock);
     input.close();
     // Passed through as-is; turn outcomes live in the markers and the
     // sidecar's exited.lastResult, which outrank this code.
     process.exitCode = code ?? 1;
-  });
+  };
+  attachLettaChild(child, core, io.mirrorLine, onExit);
+  // the stall check (core.tick): an errored turn with no result for LETTA_ERROR_STALL_MS restarts the child
+  const clock = setInterval(() => core.tick(Date.now()), 5_000);
+  clock.unref();
 }
 
 // Compiled-entry guard: run main() only when executed directly.

@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, it, expect, vi } from "vitest";
 import {
-  LettaRunnerCore, attachLettaChild, parseLettaRunnerArgs,
+  LettaRunnerCore, attachLettaChild, parseLettaRunnerArgs, LETTA_ERROR_STALL_MS,
   type LettaChildLike, type LettaRunnerIo,
 } from "../src/adapters/letta-runner.js";
 import {
@@ -246,5 +246,116 @@ describe("parseLettaRunnerArgs", () => {
     expect(() => parseLettaRunnerArgs([...base, "--agent", AGENT, "--conversation", "local-conv-4"])).toThrow(/exactly one/);
     expect(() => parseLettaRunnerArgs(base)).toThrow(/exactly one/);
     expect(() => parseLettaRunnerArgs(base.slice(0, -2).concat("--agent", AGENT))).toThrow(/permission-mode/);
+  });
+});
+
+describe("LettaRunnerCore recovers a wedged turn by restarting letta in the same conversation (2026-10-13)", () => {
+  const errorLine = (message: string) => JSON.stringify({ type: "error", message });
+  function withRestart(start = "2026-10-13T03:00:00.000Z") {
+    const t = core();
+    let now = Date.parse(start);
+    const restartChild = vi.fn();
+    t.io.now = () => new Date(now).toISOString();
+    t.io.restartChild = restartChild;
+    return { ...t, restartChild, advance: (ms: number) => { now += ms; return now; } };
+  }
+
+  it("a dead run (\"already has an active run\") restarts at once, keeping the queue, and the fresh child takes it", () => {
+    const t = withRestart();
+    const [init] = lines("turn-success.jsonl");
+    t.core.handleLine(init!);
+    t.core.handleUserBlock("first");
+    t.core.handleUserBlock("second");                     // held behind the turn in flight
+    t.core.handleLine(errorLine("Conversation local-conv-4 already has an active run (local-run-235)"));
+    expect(t.restartChild).toHaveBeenCalledTimes(1);
+    expect(t.core.isRestarting()).toBe(true);
+    expect(t.core.queuedCount()).toBe(1);
+    expect(t.mirror.join("\n")).toMatch(/restarting letta in the same conversation \(1 queued input\(s\) kept\)/);
+    expect(t.core.resumeTarget()).toEqual({ conversationId: "local-conv-4", agentId: AGENT });
+    // the old child's exit is not the runner's end, and reports nothing undelivered
+    t.core.handleChildExit(143);
+    expect(t.mirror.join("\n")).not.toMatch(/were not delivered/);
+    expect(t.mirror.join("\n")).toMatch(/letta stopped for a restart/);
+    // the fresh child is up: the held input goes to it
+    t.core.handleLine(init!);
+    expect(t.core.isRestarting()).toBe(false);
+    expect(userLines(t.stdin).map((m) => m.message.content)).toEqual(["first", "second"]);
+  });
+
+  it("an errored turn with no record and no result for the stall time restarts; not a moment before", () => {
+    const t = withRestart();
+    const [init] = lines("turn-success.jsonl");
+    t.core.handleLine(init!);
+    t.core.handleUserBlock("first");
+    t.core.handleLine(errorLine("The operation was aborted due to timeout"));
+    t.core.tick(t.advance(LETTA_ERROR_STALL_MS - 1_000));
+    expect(t.restartChild).not.toHaveBeenCalled();
+    t.core.tick(t.advance(1_000));
+    expect(t.restartChild).toHaveBeenCalledTimes(1);
+  });
+
+  it("an error that letta goes on from (its own retry: more records) is not a wedge", () => {
+    const t = withRestart();
+    const [init, ...rest] = lines("turn-success.jsonl");
+    t.core.handleLine(init!);
+    t.core.handleUserBlock("first");
+    t.core.handleLine(errorLine("exceeded request buffer limit while retrying upstream"));
+    t.advance(40_000);
+    t.core.handleLine(rest[0]!);                              // the turn goes on
+    t.core.tick(t.advance(40_000));                           // 80 s after the error, 40 s after the last record
+    expect(t.restartChild).not.toHaveBeenCalled();
+    for (const line of rest.slice(1)) t.core.handleLine(line); // and ends with its result
+    t.core.tick(t.advance(LETTA_ERROR_STALL_MS));
+    expect(t.restartChild).not.toHaveBeenCalled();
+    expect(t.core.isTurnInFlight()).toBe(false);
+  });
+
+  it("an entry that cannot restart (no restartChild) keeps the old behaviour: nothing restarts", () => {
+    const t = core();
+    const [init] = lines("turn-success.jsonl");
+    t.core.handleLine(init!);
+    t.core.handleUserBlock("first");
+    t.core.handleLine(errorLine("Conversation local-conv-4 already has an active run (local-run-1)"));
+    expect(t.core.isRestarting()).toBe(false);
+    expect(t.core.isTurnInFlight()).toBe(true);
+  });
+});
+
+describe("a plain runtime error leaves the lead idle and taking input, not waiting on a person (2026-10-13)", () => {
+  const errorLine = (message: string) => JSON.stringify({ type: "error", message });
+  const resultError = JSON.stringify({ type: "result", subtype: "error", result: "", conversation_id: "local-conv-4" });
+
+  it("a provider timeout that ends its turn posts Stop (idle), clears the attention, and the next input goes", () => {
+    const t = core();
+    t.core.handleLine(lines("turn-success.jsonl")[0]!);
+    t.core.handleUserBlock("first");
+    t.core.handleLine(errorLine("The operation was aborted due to timeout"));
+    t.core.handleLine(resultError);
+    expect(t.activity.at(-1)).toMatchObject({ hookEvent: "Stop", subtype: "result_error" });
+    expect(t.activity.at(-1)?.attentionCode).toBeUndefined();
+    expect(t.sidecars.at(-1)?.attention).toBeUndefined();
+    expect(t.mirror.join("\n")).toMatch(/ERROR The operation was aborted due to timeout/);  // the pane still says so
+    t.core.handleUserBlock("carry on");
+    expect(userLines(t.stdin).map((m) => m.message.content)).toEqual(["first", "carry on"]);
+  });
+
+  it("a restart posts Stop (idle) at once, and Stop again once the fresh child is up with nothing queued", () => {
+    const t = core();
+    const restartChild = vi.fn();
+    t.io.restartChild = restartChild;
+    const [init] = lines("turn-success.jsonl");
+    t.core.handleLine(init!);
+    t.core.handleUserBlock("first");
+    t.core.handleLine(errorLine("Conversation local-conv-4 already has an active run (local-run-9)"));
+    expect(restartChild).toHaveBeenCalledTimes(1);
+    expect(t.activity.at(-1)).toMatchObject({ hookEvent: "Stop", subtype: "result_error_restart" });
+    expect(t.activity.some((a) => a.subtype === "runtime_error" && a.attentionCode === "runtime_error")).toBe(true); // the error itself was raised
+    t.core.handleChildExit(143);
+    t.core.handleLine(init!);
+    expect(t.activity.at(-1)).toMatchObject({ hookEvent: "Stop", subtype: "restarted_idle" });
+  });
+
+  it("the stall is a minute", () => {
+    expect(LETTA_ERROR_STALL_MS).toBe(60_000);
   });
 });
