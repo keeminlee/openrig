@@ -129,7 +129,7 @@ import { WorkflowRuntime } from "./domain/workflow-runtime.js";
 import { resolveWorkflowHumanDestination } from "./domain/workflow-human-destination.js";
 import { makeWorkflowKeepalivePolicy } from "./domain/policies/workflow-keepalive.js";
 import { makeIdleGateQitemPolicy } from "./domain/policies/idle-gate-qitem.js";
-import { makeParkedOwnerConsumerPolicy, makeRigAnchor, PARKED_OWNER_POLICY_NAME } from "./domain/policies/parked-owner-consumer.js";
+import { makeParkedOwnerConsumerPolicy, makeRigAnchor, PARKED_OWNER_POLICY_NAME, parkedOwnerSkipsRuntime } from "./domain/policies/parked-owner-consumer.js";
 import { diagnoseRigParked } from "./domain/parked-query.js";
 import { SpecReviewService } from "./domain/spec-review-service.js";
 import { SpecLibraryService } from "./domain/spec-library-service.js";
@@ -2108,14 +2108,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           diagnoseRig: (rigName) => {
             const seats = db
               .prepare(
-                `SELECT n.id AS node_id, s.session_name AS session_name
+                `SELECT n.id AS node_id, s.session_name AS session_name, n.runtime AS runtime
                    FROM nodes n
                    JOIN rigs r ON r.id = n.rig_id
                    JOIN sessions s ON s.node_id = n.id
                     AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
                   WHERE s.status = 'running' AND s.session_name IS NOT NULL AND r.name = ?`,
               )
-              .all(rigName) as Array<{ node_id: string; session_name: string }>;
+              .all(rigName) as Array<{ node_id: string; session_name: string; runtime: string | null }>;
+            const consumerSeats = seats.filter((s) => !parkedOwnerSkipsRuntime(s.runtime));
             const parkedDeps = {
               getSeatState: (seatNodeId: string) => seatActivityService.getSeatState(seatNodeId),
               listOpenObligations: (destinationSession: string, limit: number) => ({
@@ -2132,7 +2133,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             };
             return diagnoseRigParked(
               parkedDeps,
-              seats.map((s) => ({ seatNodeId: s.node_id, sessionName: s.session_name })),
+              consumerSeats.map((s) => ({ seatNodeId: s.node_id, sessionName: s.session_name })),
             ) as never;
           },
           history: {
