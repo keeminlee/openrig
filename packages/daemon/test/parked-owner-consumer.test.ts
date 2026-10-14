@@ -18,6 +18,7 @@ import {
   FAILED_PREFIX,
   NUDGE_FAIL_PREFIX,
   PARKED_OWNER_POLICY_NAME,
+  parkedOwnerSkipsRuntime,
   type ParkedOwnerConsumerDeps,
   type ParkedSeatDiagnosisView,
   type RowTransitionView,
@@ -464,5 +465,23 @@ describe("parked-owner-consumer — R2 integration hard checks (OPR.0.5.6.24)", 
       .prepare("SELECT job_id, target_session FROM watchdog_jobs WHERE policy = ? AND target_session = ?")
       .get(PARKED_OWNER_POLICY_NAME, makeRigAnchor("late-rig")) as { job_id: string } | undefined;
     expect(job).toBeDefined();
+  });
+});
+
+describe("parked-owner consumer: runtime opt-out (OPENRIG_PARKED_OWNER_SKIP_RUNTIMES)", () => {
+  it("consumes every runtime when the variable is unset or empty", () => {
+    expect(parkedOwnerSkipsRuntime("letta", {})).toBe(false);
+    expect(parkedOwnerSkipsRuntime("letta", { OPENRIG_PARKED_OWNER_SKIP_RUNTIMES: "" })).toBe(false);
+  });
+  it("skips only the listed runtimes", () => {
+    const env = { OPENRIG_PARKED_OWNER_SKIP_RUNTIMES: " letta , codex" };
+    expect(parkedOwnerSkipsRuntime("letta", env)).toBe(true);
+    expect(parkedOwnerSkipsRuntime("codex", env)).toBe(true);
+    expect(parkedOwnerSkipsRuntime("claude-code", env)).toBe(false);
+  });
+  it("never skips a seat whose runtime is unknown", () => {
+    const env = { OPENRIG_PARKED_OWNER_SKIP_RUNTIMES: "letta" };
+    expect(parkedOwnerSkipsRuntime(null, env)).toBe(false);
+    expect(parkedOwnerSkipsRuntime(undefined, env)).toBe(false);
   });
 });

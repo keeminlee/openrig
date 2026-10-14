@@ -72,6 +72,22 @@ export function makeRigAnchor(rigName: string): string {
   return `${PARKED_OWNER_POLICY_NAME}@${rigName}`;
 }
 
+/** Runtimes the consumer never wakes, from OPENRIG_PARKED_OWNER_SKIP_RUNTIMES
+ *  (comma-separated, e.g. "letta"). A seat on a metered runtime that is woken
+ *  by its own queue events pays a whole cold context per wake for an ack; the
+ *  operator opts it out here. Unset means every runtime is consumed. */
+export function parkedOwnerSkipsRuntime(
+  runtime: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (!runtime) return false;
+  const skip = (env["OPENRIG_PARKED_OWNER_SKIP_RUNTIMES"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return skip.includes(runtime);
+}
+
 export function rigFromAnchor(targetSession: string): string {
   return targetSession.startsWith(`${PARKED_OWNER_POLICY_NAME}@`)
     ? targetSession.slice(PARKED_OWNER_POLICY_NAME.length + 1)
