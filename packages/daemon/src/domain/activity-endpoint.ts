@@ -77,6 +77,14 @@ export function writeActivityEndpointFile(stateDir: string, endpoint: { baseUrl:
   }
 }
 
+/** The operator's opt-in (OPENRIG_ACTIVITY_TOKEN_VIA_FILE=1) to keep the activity token out of the seats' launch
+ *  env. It otherwise rides `tmux new-session -e`, and the first launch's argv stays readable in the tmux server's
+ *  /proc cmdline for the server's whole life. Every relay already falls back to activity-endpoint.json (mode 0600,
+ *  the seat user's) when its env has no token, so seats keep reporting. Unset keeps today's behaviour. */
+export function activityTokenViaFile(env: Record<string, string | undefined> = process.env): boolean {
+  return env["OPENRIG_ACTIVITY_TOKEN_VIA_FILE"]?.trim() === "1";
+}
+
 /** Read {baseUrl, token} from activity-endpoint.json, or null if absent/invalid.
  *  (The relay .cjs reads the file directly; this is for daemon-side use + tests.) */
 export function readActivityEndpointFile(stateDir: string): { baseUrl: string; token: string } | null {

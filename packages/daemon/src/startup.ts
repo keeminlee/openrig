@@ -169,7 +169,7 @@ import { WebhookNotificationAdapter } from "./domain/mission-control/notificatio
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
 import { OPENRIG_HOME } from "./openrig-compat.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
-import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
+import { activityTokenViaFile, ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -595,7 +595,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     OPENRIG_PORT: openRigPort,
     OPENRIG_HOST: openRigHost,
     OPENRIG_URL: resolvedActivityHookUrl,
-    OPENRIG_ACTIVITY_HOOK_TOKEN: resolvedActivityHookToken,
+    // Left out when the operator opts in: the seats then read it from activity-endpoint.json (see activityTokenViaFile).
+    OPENRIG_ACTIVITY_HOOK_TOKEN: activityTokenViaFile() ? undefined : resolvedActivityHookToken,
     ...providerAuthEnv,
     HOME: daemonHome,
     USER: process.env.USER,

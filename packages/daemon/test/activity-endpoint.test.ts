@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
-import { ensureActivityHookToken, writeActivityEndpointFile, readActivityEndpointFile, deriveActivityUrl } from "../src/domain/activity-endpoint.js";
+import { activityTokenViaFile, ensureActivityHookToken, writeActivityEndpointFile, readActivityEndpointFile, deriveActivityUrl } from "../src/domain/activity-endpoint.js";
 
 describe("activity-endpoint (OPR.0.4.3.28 B2)", () => {
   let stateDir: string;
@@ -70,5 +70,15 @@ describe("activity-endpoint (OPR.0.4.3.28 B2)", () => {
     expect(readActivityEndpointFile(stateDir)).toBeNull();
     fs.writeFileSync(nodePath.join(stateDir, "activity-endpoint.json"), JSON.stringify({ baseUrl: "" }));
     expect(readActivityEndpointFile(stateDir)).toBeNull();
+  });
+});
+
+describe("activity token via the endpoint file (OPENRIG_ACTIVITY_TOKEN_VIA_FILE)", () => {
+  it("is off unless the operator opts in with 1", () => {
+    expect(activityTokenViaFile({})).toBe(false);
+    expect(activityTokenViaFile({ OPENRIG_ACTIVITY_TOKEN_VIA_FILE: "" })).toBe(false);
+    expect(activityTokenViaFile({ OPENRIG_ACTIVITY_TOKEN_VIA_FILE: "true" })).toBe(false);
+    expect(activityTokenViaFile({ OPENRIG_ACTIVITY_TOKEN_VIA_FILE: "1" })).toBe(true);
+    expect(activityTokenViaFile({ OPENRIG_ACTIVITY_TOKEN_VIA_FILE: " 1 " })).toBe(true);
   });
 });
