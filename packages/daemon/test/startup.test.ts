@@ -737,7 +737,14 @@ describe("createDaemon startup composition", () => {
       const cmuxFactory: CmuxTransportFactory = async () => {
         throw Object.assign(new Error(""), { code: "ENOENT" });
       };
-      const tmuxExec = vi.fn<ExecFn>(async () => "");
+      // #1907: a seat's env reaches tmux through a private launch config, not argv. Read each config
+      // while the mock consumes it, and keep the raw calls to prove no value crosses on a command line.
+      const configs: string[] = [];
+      const tmuxExec = vi.fn<ExecFn>(async (command) => {
+        const file = /source-file (?:'([^']+)'|(\S+))$/.exec(command);
+        if (file) configs.push(fs.readFileSync(file[1] ?? file[2]!, "utf8"));
+        return "";
+      });
       const { db, deps } = await createDaemon({ cmuxFactory, tmuxExec });
       try {
         const rig = deps.rigRepo.createRig("letta-env-rig");
@@ -747,10 +754,11 @@ describe("createDaemon startup composition", () => {
           const result = await deps.nodeLauncher.launchNode(rig.id, logicalId);
           expect(result.ok).toBe(true);
           if (!result.ok) return "";
-          return tmuxExec.mock.calls.map((call) => call[0])
-            .find((cmd) => cmd.includes("tmux new-session") && cmd.includes(result.sessionName)) ?? "";
+          return configs.find((text) => text.startsWith("new-session ") && text.includes(result.sessionName)) ?? "";
         };
-        return { letta: await commandFor("letta-worker"), claude: await commandFor("claude-worker") };
+        const letta = await commandFor("letta-worker");
+        const claude = await commandFor("claude-worker");
+        return { letta, claude, argv: tmuxExec.mock.calls.map(([command]) => command).join("\n") };
       } finally {
         db.close();
       }
@@ -761,8 +769,10 @@ describe("createDaemon startup composition", () => {
       expect(optedIn.letta).toContain("-e 'LETTA_LOCAL_BACKEND_DIR=/srv/letta-backend'");
       expect(optedIn.letta).toContain("-e 'LETTA_API_KEY=synthetic-letta-key'");
       expect(optedIn.letta).toContain("-e 'LETTA_BASE_URL=http://127.0.0.1:8283'");
-      expect(optedIn.claude).toContain("tmux new-session");
+      expect(optedIn.claude).toContain("new-session ");
       expect(optedIn.claude).not.toContain("LETTA_");
+      for (const key of ["LETTA_LOCAL_BACKEND_DIR", "LETTA_API_KEY", "LETTA_BASE_URL"]) expect(optedIn.argv).not.toContain(`${key}=`);
+      expect(optedIn.argv).not.toContain("synthetic-letta-key");
 
       const notNamed = await launchCommands("");
       expect(notNamed.letta).toContain("-e 'LETTA_LOCAL_BACKEND_DIR=/srv/letta-backend'");
