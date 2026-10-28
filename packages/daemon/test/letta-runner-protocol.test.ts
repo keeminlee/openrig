@@ -194,6 +194,8 @@ describe("stdin encoding", () => {
       session_id: "conv-1", session_name: "dev-lead@rig", sampled_at: "2026-10-28T14:00:00Z",
     });
     expect(parseLettaContextWindow(JSON.stringify({ effective: { model: "x", context_window_limit: 272000 } }))).toBe(272000);
+    // Letta Code 0.34.8's shape, as printed live on 2026-10-28
+    expect(parseLettaContextWindow(JSON.stringify({ model: "openai-codex/gpt-6.1-sol", context_window_limit: 272000, model_settings: { context_window_limit: 272000 } }))).toBe(272000);
     expect(parseLettaContextWindow("not json")).toBeNull();
     expect(parseLettaContextWindow(JSON.stringify({ effective: {} }))).toBeNull();
   });
@@ -205,6 +207,7 @@ describe("stdin encoding", () => {
     expect(JSON.parse(encodeLettaToolDenial("perm-tc-1", "no", false)).response.response).toEqual({ behavior: "deny", message: "no" });
     expect(summarizeToolInput({ command: "git   status\n" })).toBe("git status");
     expect(summarizeToolInput({ file_path: "/w/a.ts", content: "x" })).toBe("/w/a.ts");
+    expect(summarizeToolInput({ cmd: "touch a.txt", description: "x" })).toBe("touch a.txt"); // the codex toolset's exec_command
     expect(summarizeToolInput({ q: "x".repeat(400) }).length).toBe(240);
   });
 

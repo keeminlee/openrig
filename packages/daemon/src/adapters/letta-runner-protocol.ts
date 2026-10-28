@@ -307,7 +307,7 @@ export function summarizeToolInput(input: unknown, max = 240): string {
   let text: string;
   if (typeof input === "object" && !Array.isArray(input)) {
     const obj = input as Record<string, unknown>;
-    const lead = ["command", "file_path", "path", "pattern", "url"].find((k) => typeof obj[k] === "string");
+    const lead = ["command", "cmd", "file_path", "path", "pattern", "url"].find((k) => typeof obj[k] === "string");
     text = lead ? String(obj[lead]) : JSON.stringify(obj);
   } else {
     text = typeof input === "string" ? input : JSON.stringify(input);
@@ -345,12 +345,19 @@ export function buildLettaContextSample(input: {
   };
 }
 
-/** The effective context limit from `letta model get` JSON output, or null. */
+/** The effective context limit from `letta model get` JSON output, or null. Letta Code 0.34.8 prints it at the top
+ *  level ({ model, context_window_limit, model_settings }); later versions nest it under `effective`. */
 export function parseLettaContextWindow(stdout: string): number | null {
+  const ok = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
   try {
-    const parsed = JSON.parse(stdout) as { effective?: { context_window_limit?: unknown } };
-    const limit = parsed.effective?.context_window_limit;
-    return typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : null;
+    const parsed = JSON.parse(stdout) as {
+      context_window_limit?: unknown; effective?: { context_window_limit?: unknown };
+      model_settings?: { context_window_limit?: unknown };
+    };
+    for (const limit of [parsed.effective?.context_window_limit, parsed.context_window_limit, parsed.model_settings?.context_window_limit]) {
+      if (ok(limit)) return limit;
+    }
+    return null;
   } catch {
     return null;
   }

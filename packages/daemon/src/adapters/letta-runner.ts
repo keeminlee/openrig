@@ -51,7 +51,8 @@ export interface LettaRunnerIo {
   restartChild?(): void;
   /** Write a context sample where the daemon's context monitor reads it. */
   writeContextUsage?(sample: Record<string, unknown>): void;
-  /** The agent's context limit (from `letta model get`), once per ready child; null when unknown. */
+  /** The conversation's effective context limit (`letta model get --conversation`; it refuses --agent with it), once per
+   *  ready child; null when unknown. */
   probeContextWindow?(agentId: string, conversationId: string): Promise<number | null>;
   now(): string;
 }
@@ -688,7 +689,7 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
     probeContextWindow: (agentId, conversationId) => new Promise((resolve) => {
       let out = "";
       try {
-        const probe = spawn("letta", ["model", "get", "--agent", agentId, "--conversation", conversationId],
+        const probe = spawn("letta", ["model", "get", "--conversation", conversationId],
           { cwd: args.cwd, env: childEnv, stdio: ["ignore", "pipe", "ignore"] });
         const timer = setTimeout(() => { probe.kill(); resolve(null); }, 20_000);
         probe.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
