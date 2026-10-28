@@ -7,16 +7,18 @@
 
 This fork adds one thing to OpenRig: **`runtime: letta`**, a seat runtime that runs a [Letta](https://www.letta.com/) agent as an OpenRig seat, through headless [Letta Code](https://github.com/letta-ai/letta-code). A Letta seat is addressed, supervised and messaged like any other seat. It can sit beside Claude Code and Codex seats in the same rig, or a rig can use it for every seat. Runtimes are chosen per member in `rig.yaml`.
 
-- **Status: experimental and unofficial.** Upstream hasn't reviewed or adopted it. Upstream is building a plug-in point for community harnesses ([discussion #43](https://github.com/mvschwarz/openrig/discussions/43)); this runtime is meant to move there once that contract lands, and this fork stays thin until then.
-- **Branch:** [`letta-runtime-0.7.1`](https://github.com/keeminlee/openrig/tree/letta-runtime-0.7.1) is upstream **v0.7.1** plus the Letta runtime (11 commits). Older bases: `letta-runtime-0.6.11`, `letta-runtime-0.6.9`. **`main` doesn't contain the runtime**; it's an old copy of upstream.
-- **Docs:** [docs/reference/letta-runtime.md](docs/reference/letta-runtime.md) covers binding a seat to an agent, permissions, environment, startup, readiness codes and the limits of v1.
+**It also runs where only Letta is available.** On a machine without Claude Code or Codex, `rig setup --providers letta` and `rig daemon start` boot OpenRig's own kernel on Letta, and every seat can be a Letta seat.
 
-### What a Letta seat does and doesn't do (v1)
+- **Status: experimental and unofficial.** Upstream hasn't reviewed or adopted it. Upstream is building a plug-in point for community harnesses ([discussion #43](https://github.com/mvschwarz/openrig/discussions/43)); this runtime is meant to move there once that contract lands, and this fork stays thin until then.
+- **Branch:** [`letta-runtime-0.7.1`](https://github.com/keeminlee/openrig/tree/letta-runtime-0.7.1) is upstream **v0.7.1** plus the Letta runtime. Older bases: `letta-runtime-0.6.11`, `letta-runtime-0.6.9`. **`main` doesn't contain the runtime**; it's an old copy of upstream.
+- **Docs:** [docs/reference/letta-runtime.md](docs/reference/letta-runtime.md) covers agents, permissions and approvals, environment, startup, context reporting, Letta-only machines, readiness codes and limits.
+
+### What a Letta seat does and doesn't do
 
 | | |
 |---|---|
-| **Does** | binds an existing Letta agent (a new conversation each launch) or creates a disposable one; resumes the exact conversation; takes startup guidance and skills; sends and receives `rig send`; reports activity, readiness and attention to the daemon |
-| **Doesn't** | fork; project MCP servers, plugins, hooks or subagents (Letta keeps its own tools); answer tool approvals from the pane (in practice a seat runs unrestricted, or has every approval denied); take OpenRig's managed compaction or handover (Letta owns its own memory and compaction) |
+| **Does** | starts with nothing prepared (it creates its own Letta agent on first launch and keeps it), or binds an agent you name; resumes the exact conversation; lets a person answer tool approvals in the pane (`/approve`, `/deny [reason]`); takes OpenRig's kernel and team allowances; gets startup guidance, skills, `openrig-core`'s operating skills and subagents; sends and receives `rig send`; reports activity, readiness, context use and model to the daemon |
+| **Doesn't** | fork a conversation; take OpenRig's managed compaction or handover (Letta owns its own memory and compaction); project hooks or MCP servers; ask (rather than refuse) on a team seat's lifecycle commands |
 | **One turn at a time** | input that arrives mid-turn waits in a queue |
 
 ### Install from source
@@ -32,14 +34,23 @@ npm install -g ./packages/cli     # puts this build's `rig` on your PATH
 rig --version
 ```
 
-A Letta seat also needs Letta Code on the seat's `PATH` (`npm install -g @letta-ai/letta-code`), a Letta backend with a model provider connected, and an agent to bind. The [Letta runtime reference](docs/reference/letta-runtime.md#install-prerequisites) walks through each one.
+A Letta seat also needs Letta Code on the seat's `PATH` (`npm install -g @letta-ai/letta-code`) and a Letta backend with a model provider connected and a model that provider serves. The [Letta runtime reference](docs/reference/letta-runtime.md#install-prerequisites) walks through each one. On a Letta-only machine:
+
+```bash
+rig setup --providers letta     # installs Letta Code if missing
+letta connect <provider>        # in the backend the seats will use
+rig daemon start                # boots the kernel on Letta
+```
 
 ### Changes from upstream
 
 As Apache-2.0 §4 asks, here is what this fork changes. Everything else is upstream's, under upstream's [license](LICENSE).
 
-- **Added:** `packages/daemon/src/adapters/letta-runner.ts`, `letta-runner-protocol.ts` and `letta-runtime-adapter.ts`; their tests and fixtures under `packages/daemon/test/`; `docs/reference/letta-runtime.md`.
-- **Modified** (runtime registration, profile and resume-token handling, Letta's environment, and an operator switch to opt runtimes out of the parked-owner consumer): `packages/daemon/src/startup.ts`, and in `packages/daemon/src/` the files `domain/built-in-runtimes.ts`, `domain/runtime-adapter.ts`, `domain/profile-resolver.ts`, `domain/resume-token-validation.ts`, `domain/rigspec-instantiator.ts`, `domain/agent-activity-store.ts`, `domain/policies/parked-owner-consumer.ts` and `adapters/pi-runner.ts`; two tests; and the reference docs `agent-spec.md`, `agent-startup-guide.md` and `rig-spec.md`.
+- **Added:** `packages/daemon/src/adapters/letta-runner.ts`, `letta-runner-protocol.ts` and `letta-runtime-adapter.ts`; their tests and fixtures under `packages/daemon/test/`; the Letta-only kernel spec `packages/daemon/specs/rigs/launch/kernel/rig-letta-only.yaml`; `docs/reference/letta-runtime.md`.
+- **Modified** (runtime registration, profile and resume-token handling, Letta's environment, an operator switch to opt runtimes out of the parked-owner consumer, the Letta kernel and `rig setup --providers letta`, kernel and team allowances for Letta seats, and context and model reporting):
+  - in `packages/daemon/src/`: `startup.ts`; `adapters/kernel-authority.ts` and `adapters/pi-runner.ts`; and in `domain/`, `agent-activity-store.ts`, `built-in-runtimes.ts`, `context-monitor.ts`, `kernel-boot.ts`, `model-divergence/current-model-reader.ts`, `model-divergence/effective-model-readers.ts`, `native-permission-store.ts`, `policies/parked-owner-consumer.ts`, `profile-resolver.ts`, `resume-token-validation.ts`, `rigspec-instantiator.ts`, `runtime-adapter.ts` and `user-settings/settings-store.ts`;
+  - in `packages/cli/src/`: `commands/config.ts`, `commands/setup.ts`, `config-store.ts` and `lib/model-observation.ts`;
+  - tests that cover those changes, and the reference docs `agent-spec.md`, `agent-startup-guide.md` and `rig-spec.md`.
 - **This README:** this section was added above upstream's.
 
 Fork maintained by [@keeminlee](https://github.com/keeminlee). Please don't take questions about the Letta runtime to upstream: it isn't theirs.

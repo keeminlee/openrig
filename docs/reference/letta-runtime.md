@@ -5,14 +5,28 @@
 > in mvschwarz/openrig discussion #43, but the code has not been reviewed or adopted upstream. Its design choices
 > (below, especially **Continuity**) are Starforge's, not OpenRig doctrine.
 
-Version: 1 (v1 transport: headless Letta Code stream-json)
-Last validated against code: 2026-10-09, on the `letta-runtime` branch at `c529f98b` (on top of 0.6.7 `2caac7dd`)
-Source of truth: `packages/daemon/src/adapters/letta-runtime-adapter.ts`, `packages/daemon/src/adapters/letta-runner.ts`, `packages/daemon/src/adapters/letta-runner-protocol.ts`, `packages/daemon/src/startup.ts`, `packages/daemon/src/domain/profile-resolver.ts`, `packages/daemon/src/domain/resume-token-validation.ts`
+Version: 2 (transport: headless Letta Code stream-json)
+Last validated against code: 2026-10-28, on `letta-runtime-0.7.1` (on top of upstream v0.7.1), live against Letta Code 0.34.8 on a local backend
+Source of truth: `packages/daemon/src/adapters/letta-runtime-adapter.ts`, `packages/daemon/src/adapters/letta-runner.ts`, `packages/daemon/src/adapters/letta-runner-protocol.ts`, `packages/daemon/src/adapters/kernel-authority.ts`, `packages/daemon/src/domain/kernel-boot.ts`, `packages/daemon/src/startup.ts`, `packages/daemon/src/domain/profile-resolver.ts`, `packages/daemon/src/domain/resume-token-validation.ts`
 
 `runtime: letta` runs a [Letta](https://www.letta.com/) agent as an OpenRig seat. A Letta agent is
-stateful: its memory, model and conversations live in a Letta backend, not in the seat. The seat binds
-to an agent that already exists and opens a conversation with it; OpenRig addresses, stamps and
-supervises that conversation like any other seat, and the agent replies to other seats with `rig send`.
+stateful: its memory, model and conversations live in a Letta backend, not in the seat. Each launch opens
+a conversation with the seat's agent; OpenRig addresses, stamps and supervises that conversation like any
+other seat, and the agent replies to other seats with `rig send`.
+
+**Letta can carry a whole rig.** Version 2 (2026-10-28) closes the gaps that made Letta seats depend on
+Claude Code or Codex seats around them, for machines where only Letta is allowed:
+
+| | Claude Code seat | Letta seat |
+|---|---|---|
+| Starts with nothing prepared | yes | yes: the seat creates its own agent on first launch and keeps it ([Binding](#binding-a-seat)) |
+| The kernel (OpenRig's own operator seats) | yes | yes: `rig-letta-only.yaml` when Letta is the one runtime ([Letta-only machines](#letta-only-machines)) |
+| A person answers tool approvals in the pane | yes | yes: `/approve` or `/deny [reason]` ([Permissions](#permissions)) |
+| Kernel and team allowances (`rig`, reads, tests) without prompts | yes | yes, as Letta session rules |
+| OpenRig's operating skills (`openrig-core`) | plugin | its skills, as Letta project skills |
+| Subagents | `.claude/agents/` | `.letta/agents/` |
+| Context use and model in OpenRig's views | yes | yes ([Context and model](#context-and-model)) |
+| Fork a conversation, OpenRig-managed compaction or handover | yes | no (see [Limits](#limits)) |
 
 ---
 
@@ -60,11 +74,14 @@ On the machine (and in the shell) where the seats run:
   in WSL was seen to target Letta Cloud instead, where local provider setup fails with 401).
   Connect a model provider in that backend. Provider logins are stored per backend folder, so a
   provider connected in one `LETTA_LOCAL_BACKEND_DIR` is not visible from another.
-- **An agent to bind.** Create it with Letta Code and note its `agent-…` id. Prefer an agent made for
-  the seat: a bound seat opens a new conversation, but it shares the agent's memory blocks.
+- **A model the backend serves.** A seat that creates its agent uses the member's `model:` when it has
+  one, and otherwise the backend's default model. Check that model answers for your provider login
+  before the first launch (`letta model list`); a model the provider refuses fails every turn.
+- **Optionally, an agent to bind.** Without one, the seat creates and keeps its own (see below).
 
 Exercised live: Letta Code 0.34.8 on WSL Ubuntu (bind, startup guidance, `rig send` in both directions
-with a Claude Code seat). The stream-json shape was also probed with 0.33.2 on Windows. The runner reads
+with a Claude Code seat; on 2026-10-28, a Letta-only kernel, pane approvals, kernel allowances and
+context reporting). The stream-json shape was also probed with 0.33.2 on Windows. The runner reads
 no CLI version (Letta's `system/init` does not carry one); if `system/init` lacks a field this runner
 expects, it says so as an advisory (see [Readiness](#readiness-and-attention)) and still starts.
 
@@ -72,7 +89,14 @@ expects, it says so as an advisory (see [Readiness](#readiness-and-attention)) a
 
 ## Binding a seat
 
-A seat's agent is declared in its AgentSpec as a runtime resource of type `letta_agent_binding`.
+**No binding (the default): the seat owns its agent.** A seat whose profile declares no Letta agent creates
+one on its first fresh launch. OpenRig records it in the seat's state
+(`$OPENRIG_HOME/state/letta/<session>/seat-agent.json`), and every later fresh launch binds that same agent
+in a new conversation, so the seat keeps its memory across launches, as a Claude seat keeps its
+conversations. To start a seat over with a new agent, stop it and delete that file.
+
+**To bind an existing agent, or to make a disposable one,** declare it in the AgentSpec as a runtime
+resource of type `letta_agent_binding`.
 
 `agents/letta-peer/agent.yaml`:
 
@@ -105,8 +129,7 @@ profiles:
 ```
 
 Any other combination is refused at projection, and so is a `permission_mode` field: the seat's
-permission posture comes from its permission policy (see [Permissions](#permissions)). A fresh launch
-without a binding is refused before anything is typed into the pane.
+permission posture comes from its permission policy (see [Permissions](#permissions)).
 
 `rig.yaml`, with a Claude Code seat beside the Letta seat:
 
@@ -128,7 +151,6 @@ pods:
         profile: default
         runtime: letta
         cwd: "."
-        permission_policy: builtin:yolo
     edges: []
 
 edges: []
@@ -139,7 +161,7 @@ edges: []
 | Launch | Letta Code arguments | Notes |
 |--------|----------------------|-------|
 | Fresh, bind | `--agent <agent_id> --new` | A new conversation on the bound agent. The agent's model is never changed. |
-| Fresh, create | `--new-agent [--model <member model>]` | Only with `"create_agent": true`. |
+| Fresh, create | `--new-agent [--model <member model>]` | With no binding on the seat's first launch (then remembered), or with `"create_agent": true` (every launch). |
 | Resume | `--conversation <conversation_id>` alone | Letta Code exits when `--agent` and `--conversation` are both given; the runner checks the agent from `system/init` instead. |
 
 The resume token type is `letta_conversation` and the token is `<agent_id>/<conversation_id>`. Resume
@@ -147,7 +169,7 @@ needs no binding: the token carries the conversation. If the conversation or age
 opened, the launch returns `retry_fresh` rather than silently starting a new conversation. A runner
 that comes up on a different agent or conversation than requested is refused (`letta_identity_mismatch`).
 
-**Fork is refused in v1.** The headless transport has no conversation fork, and a Letta fork would share
+**Fork is refused.** The headless transport has no conversation fork, and a Letta fork would share
 the parent agent's memory anyway. `session_source: fork` on a letta member fails at launch.
 
 ---
@@ -164,14 +186,36 @@ every other runtime:
 | `floor` (no policy, `builtin:locked`, `builtin:standard`, `builtin:open`, `none`) | `standard` |
 | none resolved | `unrestricted` when `OPENRIG_YOLO` is on, else `standard` (as for Pi and OMP) |
 
-The pane cannot answer a tool approval. At `standard`, every approval request Letta raises is denied by
-the runner at once, the turn is interrupted, and the pane shows
-`[letta-runner] ERROR approval requested for <tool>; denied …`. The seat stays usable.
+**Approvals are answered in the pane.** At `standard`, when Letta asks to run a tool, the runner holds the
+request and shows it:
 
-**To let a Letta seat run tools unattended** (including running `rig send` to reply to other seats),
-attach `permission_policy: builtin:yolo` to its member, or a custom policy whose flag surface selects
-`full_bypass`. Config-surface policies (`builtin:standard`, `builtin:open`, custom allow/ask/deny
-rules) are recorded but not translated into Letta settings in v1.
+```
+[letta-runner] APPROVAL NEEDED exec_command: touch build/out.txt
+[letta-runner] type /approve to run it, or /deny [reason] to refuse (the agent reads the reason)
+```
+
+The seat shows as waiting on a permission prompt (`letta_approval_pending`) until a person types
+`/approve` or `/deny [reason]` in the pane. A denial's reason goes to the agent, whose turn carries on.
+Several requests queue and are answered oldest first. A message sent with `rig send` arrives inside its
+`From:`/`To:` envelope, so a peer seat can't approve another seat's tool call.
+
+**Kernel and team seats get the same allowances as Claude seats,** as Letta session rules
+(`--allowedTools`, which takes Claude's rule syntax; Letta applies `Bash(...)` rules to its Codex-style
+`exec_command` tool too):
+
+| Seat | Allowed without asking | Refused |
+|------|------------------------|---------|
+| Kernel seat (no policy attached) | OpenRig's kernel list: `rig`, `tmux`, `git`, `node`, `npm`, file and search tools, reads under `~`, … | — |
+| Team seat (no policy attached) | OpenRig's team list: `rig`, project reads, test runners | the lifecycle commands a Claude team seat must ask about (`rig up`, `rig down`, `seat stop`, `policy apply`, `setup`, `compact`, …) |
+| A seat with a policy | per the policy's posture, above | — |
+
+Letta has no session-level ask rule that outranks an allow, so on a Letta team seat the lifecycle commands
+are **refused** where a Claude team seat would **ask**: a person runs them, or attaches a policy. Letta also
+auto-allows read-only shell commands (`ls`, `cat`, `git status`, …) and reads inside the working
+directory, in every mode but `strict`.
+
+Config-surface policies (`builtin:standard`, `builtin:open`, custom allow/ask/deny rules) are recorded
+but not translated into Letta settings.
 
 ---
 
@@ -195,18 +239,64 @@ logins in its backend folder.
 
 ## Startup and projection
 
-- **Skills** are installed to `<cwd>/.agents/skills/<id>/`.
+- **Skills** are installed to `<cwd>/.agents/skills/<id>/`, the project skill folder Letta Code reads first.
+- **Plugins contribute their skills.** Letta has no plugin format, so a plugin's skills (from its
+  manifest's `skills` folder) install as project skills; its hooks and MCP servers don't come along. This
+  is how a Letta seat gets `openrig-core`'s operating skills (`queue-handoff`, `delegating-work`,
+  `messaging-the-human`, `openrig-user`, …). Skills named `claude-*` are Claude Code machinery and are
+  left out.
+- **Subagents** are installed to `<cwd>/.letta/agents/<name>.md`, which Letta Code reads as custom
+  subagents (same `name`/`description`/`tools` frontmatter). A `model:` line is dropped, because a Claude
+  model alias means nothing to Letta's provider; the subagent inherits the seat's model.
 - **Guidance** (`guidance_merge`) is merged as a managed block into `<cwd>/AGENTS.md` and, because Letta
   does not read `AGENTS.md` itself, also sent as the first turn of a fresh launch. A resumed
   conversation does not get it again. `rig-role` guidance is per-seat and goes only through `send_text`.
 - **`send_text`** startup files are sent through the runner as one turn each.
-- **Not projected in v1:** plugins, subagents, hooks and MCP servers (reported as skipped), and runtime
-  resources other than `letta_agent_binding`.
+- **Not projected:** hooks and MCP servers (reported as skipped), and runtime resources other than
+  `letta_agent_binding`. Letta Code keeps MCP servers per agent in its own settings and reaches them
+  through `letta mcp`; configure them there.
 - **Continuity** is Letta's, by our design choice: Letta Code compacts the conversation itself (with a local
   backend that is the `letta` process, not a server) and owns the agent's memory (MemFS and its reflection
   subagents). OpenRig must not write a Meep's memory, so only
   `compaction_strategy: default-compaction` (alias `harness_native`) is accepted; `managed-compaction`,
   `handover` and `apprentice-handover` are refused for letta members.
+
+---
+
+## Context and model
+
+The runner reports a Letta seat's context use and model to OpenRig, as the status-line collector does for
+a Claude seat:
+
+- Once a child is ready, the runner asks Letta Code for the conversation's context limit
+  (`letta model get --conversation <id>`).
+- On each `usage_statistics` record, it writes the last step's context tokens against that limit to
+  `$OPENRIG_HOME/state/context-usage/<session>.json`, in the Claude collector's format, stamped with
+  the occupant generation and the model the child reported at init.
+- OpenRig's context monitor reads letta seats from there, and the model reader takes the seat's model from
+  the same sample (only the current occupant's, taken after its boot).
+- OpenRig's managed compaction still acts only on Claude seats: a Letta seat is observed, never compacted.
+
+---
+
+## Letta-only machines
+
+For a machine where Claude Code and Codex aren't available (or aren't allowed) and Letta is:
+
+```bash
+rig setup --providers letta     # installs Letta Code if missing; records provider.selected=letta
+letta connect <provider>        # in the backend the seats will use (or LETTA_BASE_URL + LETTA_API_KEY)
+rig daemon start
+```
+
+Kernel boot probes Letta Code (`letta --version`) beside `claude auth status` and Codex's login. When Letta
+is the one runtime available (and chosen, if a choice was recorded), it boots `rig-letta-only.yaml`: the
+advisor, operator and queue worker on `runtime: letta`, each owning the agent it creates on first launch.
+A machine with Claude Code or Codex keeps its usual kernel. Letta's provider login isn't probed at boot; a
+seat whose backend has no provider raises `letta_auth_required` at launch, which names the fix.
+
+`provider.selected` (`rig config set provider.selected …`, or `OPENRIG_PROVIDER_SELECTED`) takes any mix of
+`claude`, `codex` and `letta`.
 
 ---
 
@@ -218,7 +308,7 @@ logins in its backend folder.
 | `letta_agent_missing` | yes | The bound agent does not exist in the backend the seat opened. Check `LETTA_LOCAL_BACKEND_DIR`. |
 | `letta_conversation_missing` | yes | The conversation to resume is gone. |
 | `letta_identity_mismatch` | yes | `system/init` reported another agent or conversation than requested; the runner stops Letta. |
-| `letta_approval_pending` | no | An approval was requested and denied (see [Permissions](#permissions)). |
+| `letta_approval_pending` | no | A tool call is waiting for a person's `/approve` or `/deny` in the pane (see [Permissions](#permissions)). The seat is healthy; it shows as waiting on a permission prompt. |
 | `runtime_error` | no | A turn ended in error; the seat still takes input. |
 | `runner_exited`, `runner_error`, `awaiting_runtime` | — | The runner exited, printed an error before readiness, or has not reported ready yet. |
 
@@ -229,16 +319,21 @@ and readiness reports it as `letta-runner advisory: …`.
 
 ---
 
-## Limits of v1
+## Limits
 
 - **One turn at a time.** Letta Code merges user input already waiting when a turn starts into a single
   turn, so the runner sends one block, waits for that turn's `result`, then sends the next. Later input
   queues in the runner; the pane shows `you (queued, N waiting)`.
-- **Fork is refused** (see above).
-- **MCP, plugins, hooks and subagents are not projected**; Letta keeps its own tools.
+- **Fork is refused** (see above): headless Letta Code has no conversation fork.
+- **No OpenRig-managed compaction or handover.** Letta compacts on its own; `/compact` isn't available
+  headless.
+- **Hooks and MCP servers aren't projected**; Letta keeps its own tools.
 - **Memory is owned by Letta.** OpenRig never writes the agent's memory and does not snapshot it; a bound
   agent's memory changes from every conversation it has, including the seat's.
-- **Permissions are binary** in practice: `unrestricted` or `standard` with every approval denied.
+- **Ask rules.** A team seat's lifecycle commands are refused rather than asked (see
+  [Permissions](#permissions)).
+- **The kernel's guidance** is upstream's and mentions `claude auth status` and `codex login status`; on a
+  Letta-only kernel those probes just report unavailable.
 
 ---
 

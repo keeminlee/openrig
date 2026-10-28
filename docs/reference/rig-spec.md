@@ -507,7 +507,7 @@ own defaults/settings apply. Other runtimes ignore this field.
 
 ### Letta (`runtime: letta`)
 
-`runtime: letta` runs a Letta agent through OpenRig's runner and headless Letta Code. The seat binds to an existing agent with a `letta_agent_binding` runtime resource in its AgentSpec and opens a new conversation with it; resume reopens that conversation, and fork is refused. Permission posture comes from `permission_policy` (`builtin:yolo` lets the seat run tools unattended; otherwise every tool approval is denied), only `default-compaction` is accepted, and `LETTA_LOCAL_BACKEND_DIR` is forwarded from the daemon while `LETTA_API_KEY` and `LETTA_BASE_URL` need `recovery.provider_auth_env_allowlist`. See [letta-runtime.md](letta-runtime.md) for the binding format, prerequisites and v1 limits.
+`runtime: letta` (Starforge fork) runs a Letta agent through OpenRig's runner and headless Letta Code. Each fresh launch opens a new conversation with the seat's agent: the one a `letta_agent_binding` runtime resource names, or else the agent the seat created on its first launch and kept. Resume reopens that conversation, and fork is refused. Permission posture comes from `permission_policy` as for other runtimes: at the floor, a person answers tool approvals in the pane (`/approve`, `/deny`), and kernel and team seats get OpenRig's allowances as Letta session rules. Only `default-compaction` is accepted, and `LETTA_LOCAL_BACKEND_DIR` is forwarded from the daemon while `LETTA_API_KEY` and `LETTA_BASE_URL` need `recovery.provider_auth_env_allowlist`. A machine with only Letta boots a Letta kernel. See [letta-runtime.md](letta-runtime.md) for the binding format, prerequisites and limits.
 
 ### Terminal Nodes
 

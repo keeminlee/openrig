@@ -524,7 +524,8 @@ remain shared.
 **Letta:**
 - Does not read `AGENTS.md` itself: guidance is merged there and also sent as the first turn of a fresh
   launch (not again on resume)
-- Selected skills are projected into `<cwd>/.agents/skills/`; see [letta-runtime.md](letta-runtime.md)
+- Selected skills, and the skills of selected plugins such as `openrig-core`, are projected into
+  `<cwd>/.agents/skills/`; subagents into `<cwd>/.letta/agents/`; see [letta-runtime.md](letta-runtime.md)
 
 **Terminal seats** (`builtin:terminal`) get no agent or profile layers and no startup proof.
 
