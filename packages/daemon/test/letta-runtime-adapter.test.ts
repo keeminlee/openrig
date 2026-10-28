@@ -160,13 +160,27 @@ describe("LettaRuntimeAdapter.launchHarness", () => {
     expect(cmd).not.toContain("--model"); // a bind never rewrites the agent's model
   });
 
-  it("refuses to launch fresh without a bound agent, before typing anything", async () => {
-    const sendShellCommand = vi.fn(async () => ({ ok: true as const }));
-    const adapter = adapterWith(memFs(), mockTmux({ sendShellCommand }));
-    const result = await adapter.launchHarness(binding, { name: SESSION });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/letta_agent_binding/);
-    expect(sendShellCommand).not.toHaveBeenCalled();
+  it("with no binding declared, the seat owns its agent: the first launch creates it and later launches bind it", async () => {
+    const fs = memFs();
+    const seatAgentPath = nodePath.join(paths.seatRoot, "seat-agent.json");
+    const first = startingPane(fs, { ready: true, agentId: AGENT, conversationId: CONV });
+    const r1 = await adapterWith(fs, mockTmux({ sendShellCommand: first.sendShellCommand })).launchHarness(binding, { name: SESSION });
+    expect(r1).toEqual({ ok: true, resumeToken: TOKEN, resumeType: "letta_conversation" });
+    expect(first.typed[0]).toContain("--create-agent");
+    expect(JSON.parse(fs.files[seatAgentPath]!).agent_id).toBe(AGENT);
+
+    const second = startingPane(fs, { ready: true, agentId: AGENT, conversationId: "local-conv-3" });
+    const r2 = await adapterWith(fs, mockTmux({ sendShellCommand: second.sendShellCommand })).launchHarness(binding, { name: SESSION });
+    expect(r2.ok).toBe(true);
+    expect(second.typed[0]).toContain(`--agent '${AGENT}'`);
+    expect(second.typed[0]).not.toContain("--create-agent");
+  });
+
+  it("an explicit create_agent binding stays disposable: nothing is remembered for the next launch", async () => {
+    const fs = memFs({ [BINDING_PATH]: JSON.stringify({ create_agent: true }) });
+    const pane = startingPane(fs, { ready: true, agentId: AGENT, conversationId: CONV });
+    await adapterWith(fs, mockTmux({ sendShellCommand: pane.sendShellCommand })).launchHarness(binding, { name: SESSION });
+    expect(fs.files[nodePath.join(paths.seatRoot, "seat-agent.json")]).toBeUndefined();
   });
 
   it("create mode only behind the explicit create_agent opt-in, and then applies the member model", async () => {

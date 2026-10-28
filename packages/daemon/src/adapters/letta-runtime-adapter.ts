@@ -277,6 +277,7 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
 
     const sessionName = binding.tmuxSession;
     let mode: LettaLaunchMode;
+    let seatOwned = false;
     if (opts.resumeToken) {
       const validation = validateResumeToken(this.runtime, opts.resumeToken);
       if (!validation.ok) return { ok: false, error: `letta resume: ${validation.error}` };
@@ -285,9 +286,15 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
     } else {
       const read = this.readAgentBinding(sessionName);
       if (!read.ok) return { ok: false, error: `letta launch: ${read.error}` };
-      mode = read.binding.agentId
-        ? { kind: "bind", agentId: read.binding.agentId }
-        : { kind: "create", allowCreateAgent: true };
+      if (read.binding.agentId) mode = { kind: "bind", agentId: read.binding.agentId };
+      else if (read.binding.createAgent) mode = { kind: "create", allowCreateAgent: true };
+      else {
+        // No binding declared: the seat owns an agent, as a Claude seat owns its conversations. The first launch
+        // creates it and OpenRig remembers it; every later fresh launch binds the same agent (a new conversation).
+        const remembered = this.readSeatAgent(sessionName);
+        mode = remembered ? { kind: "bind", agentId: remembered } : { kind: "create", allowCreateAgent: true };
+        seatOwned = true;
+      }
     }
 
     const paths = lettaSeatPaths(this.stateRoot, sessionName);
@@ -324,6 +331,7 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
     if (mode.kind === "bind" && agentId !== mode.agentId) {
       return { ok: false, error: "letta launch: the runner is ready on a different agent than the seat binding declares" };
     }
+    if (seatOwned && mode.kind === "create") this.writeSeatAgent(sessionName, agentId);
     const validation = validateResumeToken(this.runtime, formatLettaResumeToken(agentId, conversationId));
     if (!validation.ok) {
       return { ok: false, error: `letta launch: the runner reported a malformed identity (${validation.error})` };
@@ -387,15 +395,32 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
     return nodePath.join(lettaSeatPaths(this.stateRoot, sessionName).seatRoot, "pending-guidance.json");
   }
 
+  /** The seat's declared binding, or an empty one when the profile declares none (the seat then owns its agent). */
   private readAgentBinding(sessionName: string): { ok: true; binding: LettaAgentBinding } | { ok: false; error: string } {
     const path = this.agentBindingPath(sessionName);
-    if (!this.fs.exists(path)) {
-      return {
-        ok: false,
-        error: `no Letta agent is bound to this seat; select a runtime_resources entry with runtime "letta" and type "${LETTA_AGENT_BINDING_RESOURCE_TYPE}" in the agent profile`,
-      };
-    }
+    if (!this.fs.exists(path)) return { ok: true, binding: {} };
     return parseLettaAgentBinding(this.fs.readFile(path));
+  }
+
+  private seatAgentPath(sessionName: string): string {
+    return nodePath.join(lettaSeatPaths(this.stateRoot, sessionName).seatRoot, "seat-agent.json");
+  }
+
+  /** The agent this seat created on an earlier launch, when it declares no binding. */
+  private readSeatAgent(sessionName: string): string | null {
+    const path = this.seatAgentPath(sessionName);
+    if (!this.fs.exists(path)) return null;
+    try {
+      const id = (JSON.parse(this.fs.readFile(path)) as { agent_id?: unknown }).agent_id;
+      return typeof id === "string" && isLettaAgentId(id) ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeSeatAgent(sessionName: string, agentId: string): void {
+    this.fs.writeFile(this.seatAgentPath(sessionName), `${JSON.stringify({ agent_id: agentId, created_at: new Date().toISOString() }, null, 2)}
+`);
   }
 
   private permissionMode(binding: NodeBinding): LettaPermissionMode {
