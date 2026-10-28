@@ -456,7 +456,7 @@ export class LettaRunnerCore {
       contextTokens: this.contextTokens, contextWindow: this.contextWindow,
       totalInputTokens: this.inputTokens || null, totalOutputTokens: this.outputTokens || null,
       conversationId: this.conversationId ?? null, sessionName: this.identity.sessionName,
-      generation: this.identity.generation ?? null, sampledAt: this.io.now(),
+      generation: this.identity.generation ?? null, sampledAt: this.io.now(), model: this.model ?? null,
     }));
   }
 

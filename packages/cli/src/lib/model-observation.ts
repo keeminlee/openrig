@@ -18,7 +18,7 @@ export function modelObservation(value: unknown, running = true): ModelObservati
   const v = value as Record<string, unknown>;
   const generation = typeof v.generation === "string" ? v.generation : null;
   if (v.status === "observed" && typeof v.model === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-]{0,199}$/.test(v.model)
-    && ["claude-assistant-response", "codex-turn-context", "codex-world-state", "pi-assistant-response"].includes(String(v.source))
+    && ["claude-assistant-response", "codex-turn-context", "codex-world-state", "pi-assistant-response", "letta-runner"].includes(String(v.source))
     && typeof v.observedAt === "string" && Number.isFinite(Date.parse(v.observedAt)) && generation) {
     return { status: "observed", model: v.model, source: String(v.source), observedAt: v.observedAt, generation, reason: null };
   }

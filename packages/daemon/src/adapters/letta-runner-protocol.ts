@@ -324,6 +324,8 @@ export function summarizeToolInput(input: unknown, max = 240): string {
 export function buildLettaContextSample(input: {
   contextTokens: number; contextWindow: number; totalInputTokens?: number | null; totalOutputTokens?: number | null;
   conversationId: string | null; sessionName: string; generation: string | null; sampledAt: string;
+  /** The model the child reported at init; OpenRig's model reader takes a Letta seat's model from here. */
+  model?: string | null;
 }): Record<string, unknown> {
   const used = Math.min(100, Math.max(0, (input.contextTokens / input.contextWindow) * 100));
   const rounded = Math.round(used * 10) / 10;
@@ -342,6 +344,7 @@ export function buildLettaContextSample(input: {
     transcript_path: null,
     cost: null,
     sampled_at: input.sampledAt,
+    ...(input.model ? { model: input.model } : {}),
   };
 }
 

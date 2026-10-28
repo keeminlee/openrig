@@ -1015,9 +1015,13 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   // e.g. 50 = compact earlier; range is 1-100 inclusive. A value of 0
   // would fire /compact on every poll tick (catastrophic without
   // default-off as backstop).
+  // letta is a fork addition (a Letta-only kernel); any mix of the three, each once, or empty.
   "provider.selected": (_raw, value) => {
-    if (typeof value !== "string" || !/^(|claude|codex|claude,codex|codex,claude)$/.test(value)) {
-      throw new Error("Invalid provider.selected: use claude, codex, claude,codex, or an empty string for no recorded choice");
+    const names = typeof value === "string" && value !== "" ? value.split(",") : [];
+    if (typeof value !== "string"
+      || names.some((name) => !["claude", "codex", "letta"].includes(name))
+      || new Set(names).size !== names.length) {
+      throw new Error("Invalid provider.selected: use claude, codex, letta, a comma-separated mix (claude,codex), or an empty string for no recorded choice");
     }
   },
   "policies.claude_compaction.preparation_root": (_raw, value) => {

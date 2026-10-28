@@ -873,9 +873,13 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
   // "80.5" → 80) is not safe for a key the daemon's compaction trigger
   // reads at every poll tick; runtime validator rejects what the
   // contract forbids per banked feedback_static_gates_mirror_runtime_validators.
+  // letta is a fork addition (a Letta-only kernel); any mix of the three, each once, or empty.
   "provider.selected": (_raw, value) => {
-    if (typeof value !== "string" || !/^(|claude|codex|claude,codex|codex,claude)$/.test(value)) {
-      throw new Error("Invalid provider.selected: use claude, codex, claude,codex, or an empty string for no recorded choice");
+    const names = typeof value === "string" && value !== "" ? value.split(",") : [];
+    if (typeof value !== "string"
+      || names.some((name) => !["claude", "codex", "letta"].includes(name))
+      || new Set(names).size !== names.length) {
+      throw new Error("Invalid provider.selected: use claude, codex, letta, a comma-separated mix (claude,codex), or an empty string for no recorded choice");
     }
   },
   "policies.claude_compaction.preparation_root": (_raw, value) => {

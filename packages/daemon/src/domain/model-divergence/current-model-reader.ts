@@ -199,15 +199,32 @@ export class CurrentModelReader {
     return prepared.finish(finalPid, unavailableReason);
   }
 
+  /** Fork addition: a Letta seat's runner writes the model its child reported at init into the context sidecar, stamped
+   *  with the occupant generation. Only a sample from the current occupant, taken after its boot, counts. */
+  private observeLetta(sessionName: string, generation: string, boot: number): ModelObservation {
+    const unknown = (reason: string) => unknownModelObservation(reason, generation);
+    const read = this.deps.context.readSidecar(sessionName);
+    if (!read.ok) return unknown("model-record-unavailable");
+    const raw = read.data as { model?: unknown; occupant_generation?: unknown; sampled_at?: unknown };
+    if (raw.occupant_generation !== generation) return unknown("record-identity-missing-or-ambiguous");
+    if (typeof raw.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/@+\-]{0,199}$/.test(raw.model)) return unknown("model-record-unavailable");
+    const at = typeof raw.sampled_at === "string" ? Date.parse(raw.sampled_at) : NaN;
+    if (!Number.isFinite(at)) return unknown("record-time-unknown");
+    if (at <= boot) return unknown("record-predates-current-occupant");
+    if (at > (this.deps.now ?? Date.now)()) return unknown("record-time-in-future");
+    return { status: "observed", model: raw.model, source: "letta-runner", observedAt: new Date(at).toISOString(), generation, reason: null };
+  }
+
   private async prepare(node: InventoryNode, native: CurrentGenerationDeps): Promise<ModelObservation | PendingObservation> {
     const tenure = this.deps.sessions.currentOccupantTenure(node.nodeId);
     const generation = tenure?.generationUuid ?? null;
     const unknown = (reason: string) => unknownModelObservation(reason, generation);
     if (node.sessionStatus !== "running" || !node.canonicalSessionName) return unknown("seat-not-running");
     const sessionName = node.canonicalSessionName;
-    if (!["claude-code", "codex", "pi"].includes(node.runtime ?? "")) return unknown("unsupported-runtime");
+    if (!["claude-code", "codex", "pi", "letta"].includes(node.runtime ?? "")) return unknown("unsupported-runtime");
     const boot = tenure ? parseSqliteUtcMs(tenure.bootAt) : NaN;
     if (!generation || !Number.isFinite(boot) || this.deps.sessions.currentOccupantGenerationForSession(sessionName) !== generation) return unknown("occupant-unknown");
+    if (node.runtime === "letta") return this.observeLetta(sessionName, generation, boot);
     const binding = this.deps.sessions.getBindingForNode(node.nodeId);
     if (!binding?.tmuxPane || binding.tmuxSession !== sessionName) return unknown("canonical-pane-unknown");
     try {

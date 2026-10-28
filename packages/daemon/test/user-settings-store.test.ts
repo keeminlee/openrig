@@ -239,13 +239,17 @@ describe("SettingsStore (User Settings v0)", () => {
     }
   });
 
-  it("defaults provider.selected to empty and accepts only claude, codex or both", () => {
+  it("defaults provider.selected to empty and accepts only claude, codex, letta or a mix of them", () => {
     const store = new SettingsStore(configPath);
     expect(store.resolveOne("provider.selected")).toMatchObject({ value: "", source: "default" });
     store.set("provider.selected", "codex");
     expect(store.resolveOne("provider.selected")).toMatchObject({ value: "codex", source: "file" });
     store.set("provider.selected", "claude,codex");
     expect(store.resolveOne("provider.selected")).toMatchObject({ value: "claude,codex", source: "file" });
+    store.set("provider.selected", "letta");
+    expect(store.resolveOne("provider.selected")).toMatchObject({ value: "letta", source: "file" });
+    expect(() => store.set("provider.selected", "letta,letta")).toThrow(/Invalid provider.selected/);
+    expect(() => store.set("provider.selected", "gemini")).toThrow(/Invalid provider.selected/);
     for (const raw of ["gemini", "both", "claude,", "Claude", "claude codex"]) {
       expect(() => store.set("provider.selected", raw)).toThrow(/provider\.selected/);
     }

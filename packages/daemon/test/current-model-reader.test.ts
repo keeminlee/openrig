@@ -57,6 +57,26 @@ it("reports assistant-response evidence separately from the pin, with native tim
   expect(f.rigs.getRig(f.rig.id)!.nodes[0]?.model).toBe("configured-model");
 });
 
+it("a letta seat's model comes from its runner's context sidecar, and only the current occupant's counts", async () => {
+  const f = fixture("letta");
+  const sample = (over: Record<string, unknown> = {}) => ({ ok: true, data: { session_name: "editor@studio", sampled_at: f.stamp,
+    occupant_generation: f.tenure.generationUuid, model: "openai-codex/gpt-6.1-sol", ...over } });
+  let data: unknown = sample();
+  const reader = new CurrentModelReader({ sessions: f.sessions, identities: f.identities, context: { readSidecar: () => data } as never,
+    codexRollout: () => null, piRunner: () => null as never, census: new ProcessCensus({ list: async () => [], now: () => f.boot + 5_000 }),
+    now: () => f.boot + 60_000, native: { getPanePid: async () => 10, listProcesses: async () => [], readThreadIdByPid: async () => undefined } as never });
+  expect(await reader.observe(f.input)).toEqual({ status: "observed", model: "openai-codex/gpt-6.1-sol", source: "letta-runner",
+    observedAt: f.stamp, generation: f.tenure.generationUuid, reason: null });
+  data = sample({ occupant_generation: "a-predecessor" });
+  expect(await reader.observe(f.input)).toMatchObject({ status: "unknown", reason: "record-identity-missing-or-ambiguous" });
+  data = sample({ sampled_at: new Date(f.boot - 1_000).toISOString() });
+  expect(await reader.observe(f.input)).toMatchObject({ status: "unknown", reason: "record-predates-current-occupant" });
+  data = sample({ model: undefined });
+  expect(await reader.observe(f.input)).toMatchObject({ status: "unknown", reason: "model-record-unavailable" });
+  data = { ok: false, reason: "missing_sidecar" };
+  expect(await reader.observe(f.input)).toMatchObject({ status: "unknown", reason: "model-record-unavailable" });
+});
+
 it("does not need a configured pin or comparator to observe a model", async () => {
   const f = fixture(); f.db.prepare("UPDATE nodes SET model=NULL WHERE id=?").run(f.node.id);
   expect(await f.reader.observe(f.input)).toMatchObject({ status: "observed", model: "response-model" });

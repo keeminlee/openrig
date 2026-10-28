@@ -56,7 +56,7 @@ export function readTailLines(path: string, tailBytes = TAIL_BYTES): string[] {
  *  — the detector treats null as PENDING, not as a match). */
 export interface NativeModelObservation {
   model: string;
-  source: "claude-assistant-response" | "codex-turn-context" | "codex-world-state" | "pi-assistant-response";
+  source: "claude-assistant-response" | "codex-turn-context" | "codex-world-state" | "pi-assistant-response" | "letta-runner";
   /** Native record time, not file mtime or the time this reader ran. */
   observedAt: string | null;
 }
