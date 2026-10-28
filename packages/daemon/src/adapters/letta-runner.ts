@@ -25,10 +25,12 @@ import { spawn } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { createRunnerInput, resolveActivityEndpoint } from "./pi-runner.js";
+import { contextUsageDirectory, telemetrySidecarPath } from "../domain/telemetry-state-paths.js";
 import {
   lettaSeatPaths, buildLettaChildArgs, buildLettaChildEnv, buildPendingLettaRunnerState,
   classifyLettaRecord, classifyLettaExit, mapLettaEvent, parseLettaLine, verifyLettaInit, lettaInitShapeGaps,
   encodeLettaUserTurn, encodeLettaInterrupt, encodeLettaToolDenial, encodeLettaToolApproval, summarizeToolInput, formatLettaResumeToken,
+  buildLettaContextSample, parseLettaContextWindow,
   LETTA_RUNNER_READY_MARKER, LETTA_RUNNER_EXIT_MARKER, LETTA_RUNNER_ERROR_MARKER, LETTA_RUNNER_APPROVAL_MARKER, LETTA_RESUME_TYPE,
   LETTA_PERMISSION_MODES,
   type LettaAttentionCode, type LettaLaunchMode, type LettaPermissionMode, type LettaRunnerState,
@@ -47,6 +49,10 @@ export interface LettaRunnerIo {
   stopChild?(): void;
   /** Stop the child so the entry can start a fresh one that resumes the same conversation (see requestRestart). */
   restartChild?(): void;
+  /** Write a context sample where the daemon's context monitor reads it. */
+  writeContextUsage?(sample: Record<string, unknown>): void;
+  /** The agent's context limit (from `letta model get`), once per ready child; null when unknown. */
+  probeContextWindow?(agentId: string, conversationId: string): Promise<number | null>;
   now(): string;
 }
 
@@ -96,6 +102,10 @@ export class LettaRunnerCore {
   /** can_use_tool requests waiting for a person, oldest first; the pane answers the oldest. */
   private approvals: Array<{ requestId: string; toolName: string; summary: string }> = [];
   private interruptCount = 0;
+  private contextWindow: number | null = null;
+  private contextTokens: number | null = null;
+  private inputTokens = 0;
+  private outputTokens = 0;
 
   constructor(
     private io: LettaRunnerIo,
@@ -194,6 +204,14 @@ export class LettaRunnerCore {
       case "init":
         this.handleInit(event, record);
         return;
+      case "usage": {
+        const tokens = event.contextTokens ?? event.promptTokens;
+        if (tokens !== null) this.contextTokens = tokens;
+        this.inputTokens += event.promptTokens ?? 0;
+        this.outputTokens += event.completionTokens ?? 0;
+        this.writeContext();
+        return;
+      }
       case "assistant_chunk":
         this.streamedText += event.text;
         this.markTurnActive();
@@ -327,6 +345,9 @@ export class LettaRunnerCore {
     this.errorAtMs = null;
     this.writeSidecar({});
     this.io.mirrorLine(`${LETTA_RUNNER_READY_MARKER} agent=${this.agentId} conversation=${this.conversationId}${this.model ? ` model=${this.model}` : ""}`);
+    void this.io.probeContextWindow?.(this.agentId, this.conversationId).then((limit) => {
+      if (limit) { this.contextWindow = limit; this.writeContext(); }
+    }).catch(() => { /* context reporting is best-effort */ });
     this.io.postActivity({
       eventFamily: "session_identity",
       sessionName: this.identity.sessionName,
@@ -425,6 +446,17 @@ export class LettaRunnerCore {
       this.writeSidecar({});
       this.io.postActivity(this.activityPayload("active", "approval_answered"));
     }
+  }
+
+  /** The context sample for the daemon's context monitor, once both the window and a token count are known. */
+  private writeContext(): void {
+    if (!this.io.writeContextUsage || this.contextWindow === null || this.contextTokens === null) return;
+    this.io.writeContextUsage(buildLettaContextSample({
+      contextTokens: this.contextTokens, contextWindow: this.contextWindow,
+      totalInputTokens: this.inputTokens || null, totalOutputTokens: this.outputTokens || null,
+      conversationId: this.conversationId ?? null, sessionName: this.identity.sessionName,
+      generation: this.identity.generation ?? null, sampledAt: this.io.now(),
+    }));
   }
 
   private markTurnActive(): void {
@@ -614,6 +646,8 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
   } catch { /* best-effort; the pane markers still report readiness */ }
 
   const endpoint = resolveActivityEndpoint(process.env);
+  // <OPENRIG_HOME>/state/context-usage; the runner's state root is <OPENRIG_HOME>/state/letta.
+  const contextDir = contextUsageDirectory(process.env.OPENRIG_HOME || nodePath.dirname(nodePath.dirname(args.stateRoot)));
   const childEnv = buildLettaChildEnv(process.env as Record<string, string | undefined>);
   console.log(`[letta-runner] starting letta ${args.mode.kind} (seat ${args.sessionName}, permission mode ${args.permissionMode})`);
   console.log(`[letta-runner] send text normally; one message per turn (later input waits for the turn to finish); "/abort" interrupts`);
@@ -642,6 +676,28 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
     stopChild: () => { child.kill(); },
     // the exit handler below sees the core restarting and starts the fresh child
     restartChild: () => { child.kill(); },
+    writeContextUsage: (sample) => {
+      try {
+        const file = telemetrySidecarPath(contextDir, args.sessionName);
+        fs.mkdirSync(nodePath.dirname(file), { recursive: true });
+        const tmp = `${file}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(sample));
+        fs.renameSync(tmp, file);
+      } catch { /* best-effort */ }
+    },
+    probeContextWindow: (agentId, conversationId) => new Promise((resolve) => {
+      let out = "";
+      try {
+        const probe = spawn("letta", ["model", "get", "--agent", agentId, "--conversation", conversationId],
+          { cwd: args.cwd, env: childEnv, stdio: ["ignore", "pipe", "ignore"] });
+        const timer = setTimeout(() => { probe.kill(); resolve(null); }, 20_000);
+        probe.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+        probe.on("error", () => { clearTimeout(timer); resolve(null); });
+        probe.on("close", () => { clearTimeout(timer); resolve(parseLettaContextWindow(out)); });
+      } catch {
+        resolve(null);
+      }
+    }),
     now: () => new Date().toISOString(),
   };
 

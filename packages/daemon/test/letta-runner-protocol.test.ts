@@ -16,7 +16,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildLettaChildArgs, buildLettaChildEnv, buildLettaRunnerCommand, classifyLettaError, classifyLettaExit,
   classifyLettaRecord, encodeLettaInterrupt, encodeLettaToolDenial, encodeLettaToolApproval, encodeLettaUserTurn, formatLettaResumeToken,
-  summarizeToolInput,
+  summarizeToolInput, buildLettaContextSample, parseLettaContextWindow,
   mapLettaEvent, parseLettaLine, parseLettaResumeToken, parseLettaRunnerState, verifyLettaInit,
   buildPendingLettaRunnerState, lettaSeatPaths, lettaInitShapeGaps,
   type LettaEvent,
@@ -182,6 +182,20 @@ describe("stdin encoding", () => {
     expect(line.endsWith("\n")).toBe(true);
     expect(line.slice(0, -1)).not.toContain("\n");
     expect(JSON.parse(line)).toEqual({ type: "user", message: { role: "user", content: "From: claude-seat\nTo: letta-seat\n\nhello" } });
+  });
+
+  it("usage_statistics carries context tokens; a context sample has the Claude collector's shape", () => {
+    expect(classifyLettaRecord({ type: "message", message_type: "usage_statistics", prompt_tokens: 9000, completion_tokens: 300, context_tokens: 12000 }))
+      .toEqual({ kind: "usage", contextTokens: 12000, promptTokens: 9000, completionTokens: 300 });
+    const sample = buildLettaContextSample({ contextTokens: 50_000, contextWindow: 200_000, conversationId: "conv-1",
+      sessionName: "dev-lead@rig", generation: null, sampledAt: "2026-10-28T14:00:00Z" });
+    expect(sample).toMatchObject({
+      context_window: { context_window_size: 200_000, used_percentage: 25, remaining_percentage: 75 },
+      session_id: "conv-1", session_name: "dev-lead@rig", sampled_at: "2026-10-28T14:00:00Z",
+    });
+    expect(parseLettaContextWindow(JSON.stringify({ effective: { model: "x", context_window_limit: 272000 } }))).toBe(272000);
+    expect(parseLettaContextWindow("not json")).toBeNull();
+    expect(parseLettaContextWindow(JSON.stringify({ effective: {} }))).toBeNull();
   });
 
   it("approval and a non-interrupting denial match the CLI's control_response shapes", () => {

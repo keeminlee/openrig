@@ -203,6 +203,21 @@ describe("LettaRunnerCore identity and control", () => {
     ]);
   });
 
+  it("writes a context sample for the daemon's monitor once the window (from letta model get) and a token count are known", async () => {
+    const f = fakeIo();
+    const samples: Record<string, unknown>[] = [];
+    let probed: [string, string] | null = null;
+    const c = new LettaRunnerCore({ ...f.io, writeContextUsage: (s) => samples.push(s),
+      probeContextWindow: async (a, conv) => { probed = [a, conv]; return 200_000; } },
+      { sessionName: "letta-a@rig", launchId: "launch-1" }, { kind: "bind", agentId: AGENT });
+    c.handleLine(lines("turn-success.jsonl")[0]!);
+    await new Promise((r) => setImmediate(r));
+    expect(probed?.[0]).toBe(AGENT);
+    expect(samples).toEqual([]); // a window alone is not a sample
+    c.handleLine(JSON.stringify({ type: "message", message_type: "usage_statistics", prompt_tokens: 40_000, completion_tokens: 500, context_tokens: 50_000 }));
+    expect(samples.at(-1)).toMatchObject({ context_window: { context_window_size: 200_000, used_percentage: 25 }, session_name: "letta-a@rig" });
+  });
+
   it("a rig send (inside its From:/To: envelope) can't answer an approval", () => {
     const t = core();
     t.core.handleLine(lines("turn-success.jsonl")[0]!);

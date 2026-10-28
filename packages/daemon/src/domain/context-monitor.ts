@@ -270,6 +270,8 @@ export class ContextMonitor {
       WHERE (
           (n.runtime = 'claude-code' AND s.status = 'running')
           OR (n.runtime = 'stub' AND s.status = 'running')
+          -- fork addition: a letta seat's runner writes the same sidecar as the Claude collector
+          OR (n.runtime = 'letta' AND s.status = 'running')
           OR (
             n.runtime = 'codex'
             AND (

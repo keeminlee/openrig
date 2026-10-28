@@ -316,6 +316,46 @@ export function summarizeToolInput(input: unknown, max = 240): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// ── Context usage (the sidecar OpenRig's context monitor reads) ─────────────
+
+/** A context sample in the shape the Claude status-line collector writes, so the daemon's context monitor reads a Letta
+ *  seat the same way. Tokens are the last step's context (Letta's `context_tokens`, else its prompt tokens); the window
+ *  is the agent's effective context limit from `letta model get`. */
+export function buildLettaContextSample(input: {
+  contextTokens: number; contextWindow: number; totalInputTokens?: number | null; totalOutputTokens?: number | null;
+  conversationId: string | null; sessionName: string; generation: string | null; sampledAt: string;
+}): Record<string, unknown> {
+  const used = Math.min(100, Math.max(0, (input.contextTokens / input.contextWindow) * 100));
+  const rounded = Math.round(used * 10) / 10;
+  return {
+    context_window: {
+      context_window_size: input.contextWindow,
+      used_percentage: rounded,
+      remaining_percentage: Math.round((100 - rounded) * 10) / 10,
+      total_input_tokens: input.totalInputTokens ?? null,
+      total_output_tokens: input.totalOutputTokens ?? null,
+      current_usage: null,
+    },
+    session_id: input.conversationId,
+    session_name: input.sessionName,
+    occupant_generation: input.generation,
+    transcript_path: null,
+    cost: null,
+    sampled_at: input.sampledAt,
+  };
+}
+
+/** The effective context limit from `letta model get` JSON output, or null. */
+export function parseLettaContextWindow(stdout: string): number | null {
+  try {
+    const parsed = JSON.parse(stdout) as { effective?: { context_window_limit?: unknown } };
+    const limit = parsed.effective?.context_window_limit;
+    return typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── stdout classifier ────────────────────────────────────────────────────────
 
 export type LettaEvent =
@@ -327,7 +367,7 @@ export type LettaEvent =
   | { kind: "tool_started"; toolCallId: string | null }
   | { kind: "tool_finished"; toolCallId: string | null; failed: boolean }
   | { kind: "approval_requested"; toolCallId: string | null; toolName: string; requestId: string | null; input?: unknown }
-  | { kind: "usage" }
+  | { kind: "usage"; contextTokens: number | null; promptTokens: number | null; completionTokens: number | null }
   | { kind: "stop_reason"; stopReason: string }
   | { kind: "error"; message: string; stopReason: string | null }
   | { kind: "retry"; attempt: number | null; maxAttempts: number | null }
@@ -386,7 +426,7 @@ export function classifyLettaRecord(record: Record<string, unknown>): LettaEvent
         case "tool_return_message":
           return { kind: "tool_return", toolCallId: str(record.tool_call_id), failed: record.status === "error" };
         case "usage_statistics":
-          return { kind: "usage" };
+          return { kind: "usage", contextTokens: num(record.context_tokens), promptTokens: num(record.prompt_tokens), completionTokens: num(record.completion_tokens) };
         case "stop_reason":
           return { kind: "stop_reason", stopReason: str(record.stop_reason) ?? "unknown" };
         default:
