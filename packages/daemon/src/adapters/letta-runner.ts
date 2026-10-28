@@ -28,8 +28,8 @@ import { createRunnerInput, resolveActivityEndpoint } from "./pi-runner.js";
 import {
   lettaSeatPaths, buildLettaChildArgs, buildLettaChildEnv, buildPendingLettaRunnerState,
   classifyLettaRecord, classifyLettaExit, mapLettaEvent, parseLettaLine, verifyLettaInit, lettaInitShapeGaps,
-  encodeLettaUserTurn, encodeLettaInterrupt, encodeLettaToolDenial, formatLettaResumeToken,
-  LETTA_RUNNER_READY_MARKER, LETTA_RUNNER_EXIT_MARKER, LETTA_RUNNER_ERROR_MARKER, LETTA_RESUME_TYPE,
+  encodeLettaUserTurn, encodeLettaInterrupt, encodeLettaToolDenial, encodeLettaToolApproval, summarizeToolInput, formatLettaResumeToken,
+  LETTA_RUNNER_READY_MARKER, LETTA_RUNNER_EXIT_MARKER, LETTA_RUNNER_ERROR_MARKER, LETTA_RUNNER_APPROVAL_MARKER, LETTA_RESUME_TYPE,
   LETTA_PERMISSION_MODES,
   type LettaAttentionCode, type LettaLaunchMode, type LettaPermissionMode, type LettaRunnerState,
 } from "./letta-runner-protocol.js";
@@ -93,6 +93,8 @@ export class LettaRunnerCore {
   private toolNames = new Map<string, string>();
   private toolsReported = new Set<string>();
   private approvalsDenied = new Set<string>();
+  /** can_use_tool requests waiting for a person, oldest first; the pane answers the oldest. */
+  private approvals: Array<{ requestId: string; toolName: string; summary: string }> = [];
   private interruptCount = 0;
 
   constructor(
@@ -140,8 +142,18 @@ export class LettaRunnerCore {
   queuedCount(): number { return this.pending.length; }
   lastTurn(): LettaTurnSummary | null { return this.lastTurnSummary; }
 
+  /** Approvals waiting for a person. */
+  pendingApprovals(): number { return this.approvals.length; }
+
   /** One aggregated block from pane stdin. */
   handleUserBlock(block: string): void {
+    // Only a bare /approve or /deny typed into the pane answers an approval. A `rig send` arrives inside its
+    // From:/To: envelope, so a peer can't approve a seat's tool call.
+    const answer = /^\/(approve|deny)(?:\s+([\s\S]*))?$/.exec(block.trim());
+    if (answer) {
+      this.answerApproval(answer[1] === "approve", answer[2]?.trim() || undefined);
+      return;
+    }
     if (block === "/abort") {
       if (!this.turnInFlight) {
         this.io.mirrorLine("[letta-runner] nothing to abort");
@@ -205,12 +217,19 @@ export class LettaRunnerCore {
         return;
       }
       case "approval_requested": {
-        // The canonical approval trigger is control_request/can_use_tool; it
-        // blocks the turn until answered, so answer it (deny) at once.
+        // The canonical approval trigger is control_request/can_use_tool. It blocks the turn until answered, so a
+        // person answers it in the pane (/approve or /deny), as they would a Claude Code prompt.
         if (record.type === "control_request" && event.requestId) {
-          this.io.writeStdin(encodeLettaToolDenial(event.requestId, "OpenRig managed pane cannot approve tool use; denied."));
+          if (this.approvals.some((a) => a.requestId === event.requestId)) return;
+          this.approvals.push({ requestId: event.requestId, toolName: event.toolName, summary: summarizeToolInput(event.input) });
+          if (this.approvals.length === 1) this.showApproval();
+          else this.io.mirrorLine(`[letta-runner] another approval waits (${this.approvals.length} in all); answer the first one`);
+          this.raiseAttention("letta_approval_pending");
+          return;
         }
-        const key = event.toolCallId ?? event.requestId ?? "unknown";
+        // A notice that names a request id: its can_use_tool request follows, and that is what gets answered.
+        if (event.requestId) return;
+        const key = event.toolCallId ?? "unknown";
         if (this.approvalsDenied.has(key)) return;
         this.approvalsDenied.add(key);
         break;
@@ -380,6 +399,34 @@ export class LettaRunnerCore {
     this.io.mirrorLine(`you ▸ ${block}`);
   }
 
+  private showApproval(): void {
+    const next = this.approvals[0];
+    if (!next) return;
+    this.io.mirrorLine(`${LETTA_RUNNER_APPROVAL_MARKER} ${next.toolName}${next.summary ? `: ${next.summary}` : ""}`);
+    this.io.mirrorLine("[letta-runner] type /approve to run it, or /deny [reason] to refuse (the agent reads the reason)");
+  }
+
+  private answerApproval(approve: boolean, reason?: string): void {
+    const current = this.approvals.shift();
+    if (!current) {
+      this.io.mirrorLine("[letta-runner] no approval is waiting");
+      return;
+    }
+    this.io.writeStdin(approve
+      ? encodeLettaToolApproval(current.requestId)
+      : encodeLettaToolDenial(current.requestId, reason ? `Denied by a person: ${reason}` : "Denied by a person.", false));
+    this.io.mirrorLine(`[letta-runner] ${approve ? "approved" : "denied"}: ${current.toolName}`);
+    if (this.approvals.length) {
+      this.showApproval();
+      return;
+    }
+    if (this.attention === "letta_approval_pending") {
+      this.attention = undefined;
+      this.writeSidecar({});
+      this.io.postActivity(this.activityPayload("active", "approval_answered"));
+    }
+  }
+
   private markTurnActive(): void {
     if (!this.turnInFlight || this.turnActivePosted) return;
     this.turnActivePosted = true;
@@ -494,6 +541,8 @@ export interface LettaRunnerArgs {
   permissionMode: LettaPermissionMode;
   mode: LettaLaunchMode;
   model?: string;
+  allowedTools?: string[];
+  disallowedTools?: string[];
 }
 
 export function parseLettaRunnerArgs(argv: string[]): LettaRunnerArgs {
@@ -521,6 +570,8 @@ export function parseLettaRunnerArgs(argv: string[]): LettaRunnerArgs {
       case "--expect-agent": out.expectAgent = next(); break;
       case "--create-agent": out.create = true; break;
       case "--model": out.model = next(); break;
+      case "--allowed-tools": out.allowedTools = next().split(",").filter(Boolean); break;
+      case "--disallowed-tools": out.disallowedTools = next().split(",").filter(Boolean); break;
       default: throw new Error(`unknown flag: ${flag}`);
     }
   }
@@ -539,6 +590,8 @@ export function parseLettaRunnerArgs(argv: string[]): LettaRunnerArgs {
   return {
     sessionName: out.sessionName, stateRoot: out.stateRoot, cwd: out.cwd, launchId: out.launchId,
     permissionMode: out.permissionMode, mode, ...(out.model ? { model: out.model } : {}),
+    ...(out.allowedTools?.length ? { allowedTools: out.allowedTools } : {}),
+    ...(out.disallowedTools?.length ? { disallowedTools: out.disallowedTools } : {}),
   };
 }
 
@@ -547,7 +600,7 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
   let childArgs: string[];
   try {
     args = parseLettaRunnerArgs(argv);
-    childArgs = buildLettaChildArgs({ mode: args.mode, permissionMode: args.permissionMode, model: args.model });
+    childArgs = buildLettaChildArgs({ mode: args.mode, permissionMode: args.permissionMode, model: args.model, allowedTools: args.allowedTools, disallowedTools: args.disallowedTools });
   } catch (err) {
     console.error(`${LETTA_RUNNER_ERROR_MARKER} ${(err as Error).message}`);
     process.exitCode = 2;
@@ -605,7 +658,7 @@ export async function main(argv = process.argv.slice(2), spawnChild: SpawnLettaC
       if (target) {
         const resume: LettaLaunchMode = { kind: "resume", conversationId: target.conversationId, ...(target.agentId ? { expectAgentId: target.agentId } : {}) };
         io.mirrorLine(`[letta-runner] starting letta resume (conversation ${target.conversationId}) after a restart`);
-        child = spawnChild(buildLettaChildArgs({ mode: resume, permissionMode: args.permissionMode, model: args.model }), { cwd: args.cwd, env: childEnv });
+        child = spawnChild(buildLettaChildArgs({ mode: resume, permissionMode: args.permissionMode, model: args.model, allowedTools: args.allowedTools, disallowedTools: args.disallowedTools }), { cwd: args.cwd, env: childEnv });
         attachLettaChild(child, core, io.mirrorLine, onExit);
         return;
       }

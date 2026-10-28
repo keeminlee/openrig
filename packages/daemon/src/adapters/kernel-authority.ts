@@ -103,6 +103,19 @@ function claudeOperationalArgs(choice: LaunchChoice): string[] {
   return nonInterruptiveArgs("claude-code", choice);
 }
 
+/** Fork addition: the kernel and team allowances for a Letta seat, as Letta Code session rules (`--allowedTools` and
+ *  `--disallowedTools`, which take Claude's rule syntax). Letta has no session-level ask rule that outranks an allow,
+ *  so the commands a Claude team seat must ask about are refused on a Letta team seat: a person runs them, or attaches
+ *  a policy. A full-bypass seat needs no rules. Everything else asks, in the seat's pane. */
+export function lettaToolRules(choice: LaunchChoice): { allowed: string[]; disallowed: string[] } {
+  if (choice.launchPosture === "full_bypass") return { allowed: [], disallowed: [] };
+  if (choice.kernelAuthority) return { allowed: [...KERNEL_CLAUDE_ALLOW], disallowed: [] };
+  if (choice.teamPermissionDefault && !choice.permissionMode && (!choice.launchPosture || choice.launchPosture === "floor")) {
+    return { allowed: [...TEAM_CLAUDE_ALLOW], disallowed: [...TEAM_CLAUDE_ASK] };
+  }
+  return { allowed: [], disallowed: [] };
+}
+
 export function operationalLaunchArg(runtime: string, choice: LaunchChoice): string {
   return operationalLaunchArgs(runtime, choice).map(arg => ` ${shellQuote(arg)}`).join("");
 }

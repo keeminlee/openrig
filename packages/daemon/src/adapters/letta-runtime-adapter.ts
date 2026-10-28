@@ -62,6 +62,7 @@ import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TmuxAdapter } from "./tmux.js";
 import { yoloEnabled } from "./yolo-mode.js";
+import { lettaToolRules } from "./kernel-authority.js";
 import type {
   RuntimeAdapter, NodeBinding, ResolvedStartupFile,
   InstalledResource, ProjectionResult, StartupDeliveryResult, ReadinessResult,
@@ -312,6 +313,7 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
       permissionMode: this.permissionMode(binding),
       mode,
       model: binding.model,
+      ...this.toolRules(binding),
     });
     const textResult = await this.tmux.sendShellCommand(sessionName, cmd, undefined, { stageIfLong: true, execInScript: true });
     if (!textResult.ok) {
@@ -421,6 +423,13 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
   private writeSeatAgent(sessionName: string, agentId: string): void {
     this.fs.writeFile(this.seatAgentPath(sessionName), `${JSON.stringify({ agent_id: agentId, created_at: new Date().toISOString() }, null, 2)}
 `);
+  }
+
+  /** The kernel or team allowances for this seat as Letta session rules; none on an unrestricted seat. */
+  private toolRules(binding: NodeBinding): { allowedTools?: string[]; disallowedTools?: string[] } {
+    if (this.permissionMode(binding) === "unrestricted") return {};
+    const { allowed, disallowed } = lettaToolRules(binding);
+    return { ...(allowed.length ? { allowedTools: allowed } : {}), ...(disallowed.length ? { disallowedTools: disallowed } : {}) };
   }
 
   private permissionMode(binding: NodeBinding): LettaPermissionMode {

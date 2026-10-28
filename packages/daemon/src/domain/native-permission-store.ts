@@ -26,7 +26,8 @@ export class NativePermissionStore {
   /** Kernel is the persisted class-of-one rig, never a pane-name or cwd heuristic.
    * Authored policies and named Codex profiles keep their existing meaning. */
   private launchDefault(nodeId: string, runtime: string): "kernel" | "team" | undefined {
-    if (runtime !== "claude-code" && runtime !== "codex") return undefined;
+    // letta: fork addition; its seats take the same kernel and team allowances as Letta session rules.
+    if (runtime !== "claude-code" && runtime !== "codex" && runtime !== "letta") return undefined;
     try {
       const row = this.db.prepare(`SELECT r.name, n.permission_policy AS member_policy,
         r.permission_policy AS rig_policy, n.codex_config_profile AS profile

@@ -176,6 +176,26 @@ describe("LettaRuntimeAdapter.launchHarness", () => {
     expect(second.typed[0]).not.toContain("--create-agent");
   });
 
+  it("kernel and team seats carry the Claude allowances as Letta session rules; an unrestricted seat carries none", async () => {
+    const launch = async (extra: Record<string, unknown>) => {
+      const fs = memFs({ [BINDING_PATH]: JSON.stringify({ agent_id: AGENT }) });
+      const pane = startingPane(fs, { ready: true, agentId: AGENT, conversationId: CONV });
+      await adapterWith(fs, mockTmux({ sendShellCommand: pane.sendShellCommand })).launchHarness({ tmuxSession: SESSION, cwd: CWD, ...extra } as never, { name: SESSION });
+      return pane.typed[0]!;
+    };
+    const kernel = await launch({ kernelAuthority: true, launchPosture: "floor" });
+    expect(kernel).toContain("--permission-mode 'standard'");
+    expect(kernel).toMatch(/--allowed-tools '[^']*Bash\(rig:\*\)[^']*Read\(~\/\*\*\)/);
+    expect(kernel).not.toContain("--disallowed-tools");
+
+    const team = await launch({ teamPermissionDefault: true });
+    expect(team).toMatch(/--allowed-tools '[^']*Bash\(rig:\*\)/);
+    expect(team).toMatch(/--disallowed-tools '[^']*Bash\(rig down:\*\)/);
+
+    expect(await launch({ teamPermissionDefault: true, launchPosture: "full_bypass" })).not.toContain("tools");
+    expect(await launch({})).not.toContain("tools");
+  });
+
   it("an explicit create_agent binding stays disposable: nothing is remembered for the next launch", async () => {
     const fs = memFs({ [BINDING_PATH]: JSON.stringify({ create_agent: true }) });
     const pane = startingPane(fs, { ready: true, agentId: AGENT, conversationId: CONV });

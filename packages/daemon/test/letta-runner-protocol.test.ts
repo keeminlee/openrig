@@ -15,7 +15,8 @@ import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import {
   buildLettaChildArgs, buildLettaChildEnv, buildLettaRunnerCommand, classifyLettaError, classifyLettaExit,
-  classifyLettaRecord, encodeLettaInterrupt, encodeLettaToolDenial, encodeLettaUserTurn, formatLettaResumeToken,
+  classifyLettaRecord, encodeLettaInterrupt, encodeLettaToolDenial, encodeLettaToolApproval, encodeLettaUserTurn, formatLettaResumeToken,
+  summarizeToolInput,
   mapLettaEvent, parseLettaLine, parseLettaResumeToken, parseLettaRunnerState, verifyLettaInit,
   buildPendingLettaRunnerState, lettaSeatPaths, lettaInitShapeGaps,
   type LettaEvent,
@@ -181,6 +182,25 @@ describe("stdin encoding", () => {
     expect(line.endsWith("\n")).toBe(true);
     expect(line.slice(0, -1)).not.toContain("\n");
     expect(JSON.parse(line)).toEqual({ type: "user", message: { role: "user", content: "From: claude-seat\nTo: letta-seat\n\nhello" } });
+  });
+
+  it("approval and a non-interrupting denial match the CLI's control_response shapes", () => {
+    expect(JSON.parse(encodeLettaToolApproval("perm-tc-1"))).toEqual({
+      type: "control_response", response: { subtype: "success", request_id: "perm-tc-1", response: { behavior: "allow" } },
+    });
+    expect(JSON.parse(encodeLettaToolDenial("perm-tc-1", "no", false)).response.response).toEqual({ behavior: "deny", message: "no" });
+    expect(summarizeToolInput({ command: "git   status\n" })).toBe("git status");
+    expect(summarizeToolInput({ file_path: "/w/a.ts", content: "x" })).toBe("/w/a.ts");
+    expect(summarizeToolInput({ q: "x".repeat(400) }).length).toBe(240);
+  });
+
+  it("session tool rules become --allowedTools / --disallowedTools, and a rule with a comma is refused", () => {
+    const args = buildLettaChildArgs({ mode: { kind: "bind", agentId: AGENT }, permissionMode: "standard",
+      allowedTools: ["Bash(rig:*)", "Read(./**)"], disallowedTools: ["Bash(rig down:*)"] });
+    expect(args.slice(args.indexOf("--allowedTools"), args.indexOf("--allowedTools") + 2)).toEqual(["--allowedTools", "Bash(rig:*),Read(./**)"]);
+    expect(args.slice(args.indexOf("--disallowedTools"), args.indexOf("--disallowedTools") + 2)).toEqual(["--disallowedTools", "Bash(rig down:*)"]);
+    expect(buildLettaChildArgs({ mode: { kind: "bind", agentId: AGENT }, permissionMode: "standard" })).not.toContain("--allowedTools");
+    expect(() => buildLettaChildArgs({ mode: { kind: "bind", agentId: AGENT }, permissionMode: "standard", allowedTools: ["Bash(a,b)"] })).toThrow(/comma/);
   });
 
   it("interrupt and tool denial match the CLI's control shapes", () => {

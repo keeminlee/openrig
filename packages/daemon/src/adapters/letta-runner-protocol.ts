@@ -46,6 +46,8 @@ export function lettaSeatPaths(stateRoot: string, sessionName: string): LettaSea
 
 export const LETTA_RUNNER_READY_MARKER = "[letta-runner] READY";
 export const LETTA_RUNNER_EXIT_MARKER = "[letta-runner] EXITED";
+/** A tool call waiting for a person's /approve or /deny. */
+export const LETTA_RUNNER_APPROVAL_MARKER = "[letta-runner] APPROVAL NEEDED";
 export const LETTA_RUNNER_ERROR_MARKER = "[letta-runner] ERROR";
 
 // ── Attention codes (proposed; not yet in runtime-adapter.ts) ───────────────
@@ -149,6 +151,19 @@ export interface LettaChildArgsOpts {
   /** Model handle; only applied when creating an agent, so a bind or resume
    *  never rewrites an existing agent's model. */
   model?: string;
+  /** Session tool rules in Letta's (Claude-compatible) syntax, e.g. `Bash(rig:*)`; passed as --allowedTools. */
+  allowedTools?: readonly string[];
+  /** Passed as --disallowedTools; a refusal outranks an allowance. */
+  disallowedTools?: readonly string[];
+}
+
+/** Letta takes each rule list comma-separated, so a rule can't contain a comma. */
+function toolRuleList(rules: readonly string[] | undefined, flag: string): string[] {
+  if (!rules?.length) return [];
+  for (const rule of rules) {
+    if (!rule.trim() || rule.includes(",")) throw new Error(`${flag}: a rule can't be empty or contain a comma: ${rule}`);
+  }
+  return [flag, rules.join(",")];
 }
 
 /** Argv for the `letta` child the RUNNER spawns (argv-style, no shell). */
@@ -186,6 +201,7 @@ export function buildLettaChildArgs(opts: LettaChildArgsOpts): string[] {
     default:
       throw new Error(`unknown Letta launch mode: ${(mode as { kind?: string }).kind}`);
   }
+  args.push(...toolRuleList(opts.allowedTools, "--allowedTools"), ...toolRuleList(opts.disallowedTools, "--disallowedTools"));
   return args;
 }
 
@@ -231,6 +247,8 @@ export interface LettaRunnerLaunchOpts {
   permissionMode: LettaPermissionMode;
   mode: LettaLaunchMode;
   model?: string;
+  allowedTools?: readonly string[];
+  disallowedTools?: readonly string[];
 }
 
 export function buildLettaRunnerCommand(opts: LettaRunnerLaunchOpts): string {
@@ -251,6 +269,8 @@ export function buildLettaRunnerCommand(opts: LettaRunnerLaunchOpts): string {
     case "create": parts.push("--create-agent"); break;
   }
   if (opts.mode.kind === "create" && opts.model?.trim()) parts.push("--model", shellQuote(opts.model.trim()));
+  if (opts.allowedTools?.length) parts.push("--allowed-tools", shellQuote(opts.allowedTools.join(",")));
+  if (opts.disallowedTools?.length) parts.push("--disallowed-tools", shellQuote(opts.disallowedTools.join(",")));
   return parts.join(" ");
 }
 
@@ -265,14 +285,35 @@ export function encodeLettaInterrupt(requestId: string): string {
   return `${JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "interrupt" } })}\n`;
 }
 
-/** Answer a `can_use_tool` request. The pane cannot approve interactively,
- *  so the runner denies and interrupts; the operator re-sends, or attaches a
- *  full_bypass permission_policy (builtin:yolo) to the seat. */
-export function encodeLettaToolDenial(requestId: string, message: string): string {
+/** Refuse a `can_use_tool` request. `interrupt` ends the turn; without it the agent reads the reason and carries on. */
+export function encodeLettaToolDenial(requestId: string, message: string, interrupt = true): string {
   return `${JSON.stringify({
     type: "control_response",
-    response: { subtype: "success", request_id: requestId, response: { behavior: "deny", message, interrupt: true } },
+    response: { subtype: "success", request_id: requestId, response: { behavior: "deny", message, ...(interrupt ? { interrupt: true } : {}) } },
   })}\n`;
+}
+
+/** Approve a `can_use_tool` request: the tool runs with the input it asked for. */
+export function encodeLettaToolApproval(requestId: string): string {
+  return `${JSON.stringify({
+    type: "control_response",
+    response: { subtype: "success", request_id: requestId, response: { behavior: "allow" } },
+  })}\n`;
+}
+
+/** One line of a tool's input for the pane: what a person approves. */
+export function summarizeToolInput(input: unknown, max = 240): string {
+  if (input === undefined || input === null) return "";
+  let text: string;
+  if (typeof input === "object" && !Array.isArray(input)) {
+    const obj = input as Record<string, unknown>;
+    const lead = ["command", "file_path", "path", "pattern", "url"].find((k) => typeof obj[k] === "string");
+    text = lead ? String(obj[lead]) : JSON.stringify(obj);
+  } else {
+    text = typeof input === "string" ? input : JSON.stringify(input);
+  }
+  text = text.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 // ── stdout classifier ────────────────────────────────────────────────────────
@@ -285,7 +326,7 @@ export type LettaEvent =
   | { kind: "tool_return"; toolCallId: string | null; failed: boolean }
   | { kind: "tool_started"; toolCallId: string | null }
   | { kind: "tool_finished"; toolCallId: string | null; failed: boolean }
-  | { kind: "approval_requested"; toolCallId: string | null; toolName: string; requestId: string | null }
+  | { kind: "approval_requested"; toolCallId: string | null; toolName: string; requestId: string | null; input?: unknown }
   | { kind: "usage" }
   | { kind: "stop_reason"; stopReason: string }
   | { kind: "error"; message: string; stopReason: string | null }
@@ -360,7 +401,7 @@ export function classifyLettaRecord(record: Record<string, unknown>): LettaEvent
     case "control_request": {
       const request = record.request as Record<string, unknown> | undefined;
       if (request?.subtype === "can_use_tool") {
-        return { kind: "approval_requested", toolCallId: str(request.tool_call_id), toolName: str(request.tool_name) ?? "tool", requestId: str(record.request_id) };
+        return { kind: "approval_requested", toolCallId: str(request.tool_call_id), toolName: str(request.tool_name) ?? "tool", requestId: str(record.request_id), input: request.input };
       }
       return { kind: "other", type: `control_request/${String(request?.subtype)}` };
     }
@@ -493,8 +534,10 @@ export function mapLettaEvent(event: LettaEvent): LettaMirrorAndActivity {
     case "tool_call":
       return { mirrorLines: [`  ⚙ ${event.toolName} …`], activity: { hookEvent: "PreToolUse", subtype: event.toolName } };
     case "approval_requested":
+      // Only a request the runner can't answer reaches here (one without a request id); a can_use_tool request is
+      // held for a person by the runner itself.
       return {
-        mirrorLines: [`${LETTA_RUNNER_ERROR_MARKER} approval requested for ${event.toolName}; denied because the managed pane cannot answer it. Re-send a safe instruction, or attach permission_policy builtin:yolo to the seat to let it run tools unattended.`],
+        mirrorLines: [`${LETTA_RUNNER_ERROR_MARKER} approval requested for ${event.toolName}, with no request to answer; re-send the instruction.`],
         activity: { hookEvent: "Notification", subtype: "permission_prompt" },
         attention: "letta_approval_pending",
       };
