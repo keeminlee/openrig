@@ -53,10 +53,13 @@
 // Continuity is harness-native (Letta compacts server-side and owns memory);
 // profile-resolver refuses any other compaction strategy for this runtime.
 //
-// Projection: skills go to <cwd>/.agents/skills/<id>/; guidance merges into
-// the AGENTS.md managed block AND is sent as the first turn of a fresh launch,
-// because Letta does not load AGENTS.md itself. Plugins, subagents, hooks and
-// MCP are not projected in v1 (reported as skipped, as Pi does).
+// Projection: skills go to <cwd>/.agents/skills/<id>/ (Letta Code's highest
+// project skill source); guidance merges into the AGENTS.md managed block AND
+// is sent as the first turn of a fresh launch, because Letta does not load
+// AGENTS.md itself. A plugin contributes its skills (openrig-core's operating
+// skills among them; Claude-only ones are left out), and a subagent becomes a
+// Letta custom subagent in <cwd>/.letta/agents/. Hooks and MCP are not
+// projected (reported as skipped, as Pi does).
 
 import nodePath from "node:path";
 import { randomUUID } from "node:crypto";
@@ -97,6 +100,14 @@ const BLOCKING_ATTENTION: ReadonlySet<LettaAttentionCode> = new Set([
 export interface LettaAgentBinding {
   agentId?: string;
   createAgent?: true;
+}
+
+/** Drop a `model:` line from a Markdown file's frontmatter (and nothing else). */
+export function withoutModelLine(markdown: string): string {
+  const m = /^(---\r?\n)([\s\S]*?)(\r?\n---)/.exec(markdown);
+  if (!m) return markdown;
+  const front = m[2]!.split(/\r?\n/).filter((line) => !/^model\s*:/.test(line)).join("\n");
+  return `${m[1]}${front}${m[3]}${markdown.slice(m[0].length)}`;
 }
 
 /** Parse a letta_agent_binding resource. Exactly one of agent_id / create_agent. */
@@ -577,9 +588,89 @@ export class LettaRuntimeAdapter implements RuntimeAdapter {
       return true;
     }
 
-    // Plugins, subagents, hooks and MCP have no Letta projection in v1: an
-    // honest skip, never a misdelivery.
+    if (entry.category === "plugin") return this.projectPluginSkills(entry, binding, warnings);
+    if (entry.category === "subagent") return this.projectSubagent(entry, binding);
+
+    // Hooks and MCP have no Letta projection: an honest skip, never a misdelivery.
     return false;
+  }
+
+  /** A plugin's skills, installed as Letta project skills. Letta has no plugin format, so a plugin's hooks and MCP
+   *  servers don't come along; a skill named claude-* is Claude Code machinery and is left out. */
+  private projectPluginSkills(entry: ProjectionEntry, binding: NodeBinding, warnings: string[]): boolean {
+    if (!this.fs.listFiles) return false;
+    let files: string[];
+    try {
+      files = this.fs.listFiles(entry.absolutePath).map((f) => f.replaceAll("\\", "/"));
+    } catch {
+      return false;
+    }
+    const root = this.pluginSkillsRoot(entry.absolutePath);
+    const bySkill = new Map<string, string[]>();
+    for (const file of files) {
+      if (!file.startsWith(`${root}/`)) continue;
+      const [name, ...rest] = file.slice(root.length + 1).split("/");
+      if (!name || rest.length === 0 || name.startsWith("claude-")) continue;
+      bySkill.set(name, [...(bySkill.get(name) ?? []), rest.join("/")]);
+    }
+    let installed = 0;
+    for (const [name, skillFiles] of bySkill) {
+      if (!skillFiles.some((f) => f.toLowerCase() === "skill.md")) continue;
+      for (const rel of skillFiles) {
+        const source = nodePath.join(entry.absolutePath, root, name, rel);
+        const dest = nodePath.join(binding.cwd, ".agents", "skills", name, rel);
+        this.fs.mkdirp(nodePath.dirname(dest));
+        this.fs.writeFile(dest, this.fs.readFile(source));
+        this.preserveMode(source, dest);
+      }
+      installed++;
+    }
+    if (installed === 0) {
+      warnings.push(`letta: plugin ${entry.effectiveId} has no skills Letta can use (its hooks and MCP servers are not projected)`);
+      return false;
+    }
+    return true;
+  }
+
+  /** The plugin's skills folder, from its Claude or Codex manifest ("skills": "./skills" is the convention). */
+  private pluginSkillsRoot(pluginDir: string): string {
+    for (const manifest of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]) {
+      const path = nodePath.join(pluginDir, manifest);
+      if (!this.fs.exists(path)) continue;
+      try {
+        const skills = (JSON.parse(this.fs.readFile(path)) as { skills?: unknown }).skills;
+        if (typeof skills === "string" && skills.trim()) return skills.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+      } catch {
+        // an unreadable manifest falls back to the convention
+      }
+    }
+    return "skills";
+  }
+
+  /** A subagent definition (Markdown with frontmatter), as a Letta custom subagent in <cwd>/.letta/agents/. Letta reads
+   *  the same name/description/tools frontmatter; a `model:` line is dropped, because a Claude model alias means nothing
+   *  to Letta's provider, so the subagent inherits the seat's model. */
+  private projectSubagent(entry: ProjectionEntry, binding: NodeBinding): boolean {
+    const sources: Array<{ path: string; name: string }> = [];
+    let isDir = false;
+    if (this.fs.listFiles) {
+      try {
+        const files = this.fs.listFiles(entry.absolutePath);
+        isDir = files.length > 0;
+        for (const f of files) if (f.toLowerCase().endsWith(".md")) sources.push({ path: nodePath.join(entry.absolutePath, f), name: nodePath.basename(f) });
+      } catch {
+        isDir = false;
+      }
+    }
+    if (!isDir) {
+      if (!entry.absolutePath.toLowerCase().endsWith(".md")) return false;
+      sources.push({ path: entry.absolutePath, name: nodePath.basename(entry.absolutePath) });
+    }
+    if (sources.length === 0) return false;
+    const dir = nodePath.join(binding.cwd, ".letta", "agents");
+    this.fs.mkdirp(dir);
+    for (const source of sources) this.fs.writeFile(nodePath.join(dir, source.name), withoutModelLine(this.fs.readFile(source.path)));
+    return true;
   }
 
   private preserveMode(source: string, target: string): void {

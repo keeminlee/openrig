@@ -451,7 +451,7 @@ describe("LettaRuntimeAdapter startup and projection", () => {
   });
   const plan = (entries: ProjectionEntry[]) => ({ runtime: "letta", cwd: CWD, entries, startup: { files: [], actions: [] }, conflicts: [] }) as unknown as ProjectionPlan;
 
-  it("project writes the agent binding into the seat state dir and skips plugins, subagents and other runtime resources", async () => {
+  it("project writes the agent binding into the seat state dir and skips what it can't use (an empty plugin, a non-Markdown subagent, other runtime resources)", async () => {
     const raw = JSON.stringify({ agent_id: AGENT });
     const fs = memFs({ "/spec/letta-agent.json": raw, "/spec/g.md": "Guide." });
     const result = await adapterWith(fs, mockTmux()).project(plan([
@@ -466,6 +466,31 @@ describe("LettaRuntimeAdapter startup and projection", () => {
     expect(result.skipped).toEqual(["p", "s", "c"]);
     expect(fs.files[BINDING_PATH]).toBe(raw);
     expect(fs.files[nodePath.join(CWD, "AGENTS.md")]).toContain("Guide.");
+  });
+
+  it("a plugin contributes its skills (not claude-* ones) and a subagent becomes a Letta custom subagent without its model", async () => {
+    const fs = memFs({
+      "/plugins/openrig-core/.claude-plugin/plugin.json": JSON.stringify({ name: "openrig-core", skills: "./skills" }),
+      "/plugins/openrig-core/skills/queue-handoff/SKILL.md": "# queue-handoff",
+      "/plugins/openrig-core/skills/refocusing/SKILL.md": "# refocusing",
+      "/plugins/openrig-core/skills/refocusing/scripts/trace.py": "print()",
+      "/plugins/openrig-core/skills/claude-compaction-restore/SKILL.md": "# claude only",
+      "/plugins/openrig-core/hooks/claude.json": "{}",
+      "/spec/agents/reviewer.md": "---\nname: reviewer\ndescription: Reviews diffs\nmodel: sonnet\ntools: Read, Grep\n---\nYou review.",
+    });
+    fs.listFiles = (dir) => Object.keys(fs.files).filter((p) => p.startsWith(`${dir}/`)).map((p) => p.slice(dir.length + 1));
+    const result = await adapterWith(fs, mockTmux()).project(plan([
+      entry({ category: "plugin", effectiveId: "shared:openrig-core", absolutePath: "/plugins/openrig-core" }),
+      entry({ category: "subagent", effectiveId: "reviewer", absolutePath: "/spec/agents/reviewer.md" }),
+    ]), binding);
+    expect(result.projected).toEqual(["shared:openrig-core", "reviewer"]);
+    const skills = nodePath.join(CWD, ".agents", "skills");
+    expect(fs.files[nodePath.join(skills, "queue-handoff", "SKILL.md")]).toBe("# queue-handoff");
+    expect(fs.files[nodePath.join(skills, "refocusing", "scripts", "trace.py")]).toBe("print()");
+    expect(Object.keys(fs.files).some((p) => p.includes("claude-compaction-restore") && p.startsWith(CWD))).toBe(false);
+    expect(Object.keys(fs.files).some((p) => p.includes("hooks") && p.startsWith(CWD))).toBe(false);
+    expect(fs.files[nodePath.join(CWD, ".letta", "agents", "reviewer.md")])
+      .toBe("---\nname: reviewer\ndescription: Reviews diffs\ntools: Read, Grep\n---\nYou review.");
   });
 
   it("project fails loudly on a malformed agent binding", async () => {
