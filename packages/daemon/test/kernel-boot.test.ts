@@ -121,6 +121,17 @@ describe("selectVariant — auth-state → variant mapping", () => {
   it("picks rig-codex-only.yaml when only Codex available", () => {
     expect(selectVariant({ claudeCode: "unavailable", codex: "ok" })).toBe("rig-codex-only.yaml");
   });
+  it("picks rig-letta-only.yaml only when Letta is the one runtime available", () => {
+    expect(selectVariant({ claudeCode: "unavailable", codex: "unavailable", letta: "ok" })).toBe("rig-letta-only.yaml");
+    expect(selectVariant({ claudeCode: "ok", codex: "unavailable", letta: "ok" })).toBe("rig-claude-only.yaml");
+    expect(selectVariant({ claudeCode: "unavailable", codex: "ok", letta: "ok" })).toBe("rig-codex-only.yaml");
+  });
+  it("letta counts only when chosen at setup (or when no choice was recorded)", () => {
+    const probe = { claudeCode: "unavailable", codex: "unavailable", letta: "ok" } as const;
+    expect(chosenRuntimes(probe, "letta").letta).toBe("ok");
+    expect(chosenRuntimes(probe, "claude,codex").letta).toBe("unavailable");
+    expect(chosenRuntimes(probe, "").letta).toBe("ok");
+  });
 });
 
 describe("kernelAlreadyManaged — short-circuit predicate", () => {
@@ -297,9 +308,9 @@ describe("bootKernelIfNeeded — only the providers chosen at setup count", () =
   it("marks only unchosen providers unavailable", () => {
     const both = { claudeCode: "ok", codex: "ok" } as const;
     expect(chosenRuntimes(both, "")).toEqual(both);
-    expect(chosenRuntimes(both, "claude,codex")).toEqual(both);
-    expect(chosenRuntimes(both, "claude")).toEqual({ claudeCode: "ok", codex: "unavailable" });
-    expect(chosenRuntimes({ claudeCode: "unavailable", codex: "ok" }, "codex")).toEqual({ claudeCode: "unavailable", codex: "ok" });
+    expect(chosenRuntimes(both, "claude,codex")).toEqual({ ...both, letta: "unavailable" });
+    expect(chosenRuntimes(both, "claude")).toEqual({ claudeCode: "ok", codex: "unavailable", letta: "unavailable" });
+    expect(chosenRuntimes({ claudeCode: "unavailable", codex: "ok" }, "codex")).toEqual({ claudeCode: "unavailable", codex: "ok", letta: "unavailable" });
   });
 });
 

@@ -398,20 +398,45 @@ export function recordPermissionPolicyStep(deps: SetupDeps, choice: string, spec
   };
 }
 
-export type SetupProvider = "claude" | "codex";
-const PROVIDER_LABELS: Record<SetupProvider, string> = { claude: "Claude Code", codex: "Codex" };
+export type SetupProvider = "claude" | "codex" | "letta";
+const PROVIDER_LABELS: Record<SetupProvider, string> = { claude: "Claude Code", codex: "Codex", letta: "Letta Code" };
 
-/** `--providers`: the person's choice, comma-separated (`claude`, `codex`, `claude,codex` or `both`). */
+/** `--providers`: the person's choice, comma-separated (`claude`, `codex`, `letta`, any mix, or `both` for Claude Code
+ *  and Codex). Letta is a fork addition: chosen alone, the kernel runs on Letta Code. */
 export function parseSetupProviders(value: string): SetupProvider[] | { error: string } {
   const names = value.split(",").map((name) => name.trim().toLowerCase()).filter(Boolean);
   const chosen = new Set<SetupProvider>();
   for (const name of names) {
     if (name === "both") { chosen.add("claude"); chosen.add("codex"); }
-    else if (name === "claude" || name === "codex") chosen.add(name);
-    else return { error: `Unknown provider '${name}' in --providers: use claude, codex, or both.` };
+    else if (name === "claude" || name === "codex" || name === "letta") chosen.add(name);
+    else return { error: `Unknown provider '${name}' in --providers: use claude, codex, letta, or both.` };
   }
-  if (chosen.size === 0) return { error: "--providers needs claude, codex, or both." };
+  if (chosen.size === 0) return { error: "--providers needs claude, codex, letta, or both." };
   return [...chosen];
+}
+
+/** Letta Code: installed with npm when missing. Its model provider is connected per backend (`letta connect`), which
+ *  setup can't check, so a pass says so: a seat whose backend has no provider raises letta_auth_required at launch. */
+function installLetta(deps: SetupDeps): SetupStep {
+  const next = "Connect a model provider in the Letta backend the seats will use (`letta connect <provider>`, or LETTA_BASE_URL and LETTA_API_KEY for a Letta server).";
+  try {
+    deps.exec("letta --version");
+    return { id: "letta_install", status: "pass", message: `Letta Code available. ${next}` };
+  } catch {
+    try {
+      installCommand(deps, "npm install -g @letta-ai/letta-code");
+      deps.exec("letta --version");
+      return { id: "letta_install", status: "applied", message: `Installed Letta Code with npm. ${next}` };
+    } catch (err) {
+      return {
+        id: "letta_install",
+        status: "fail",
+        message: `Failed to install Letta Code: ${(err as Error).message}`,
+        reason: "Letta seats need Letta Code installed on this machine.",
+        fixHint: "Install Letta Code with `npm install -g @letta-ai/letta-code` (on bare Ubuntu, install build-essential and python3 first).",
+      };
+    }
+  }
 }
 
 /** A provider the person didn't choose is left out: not installed, not checked, and never failed. */
@@ -426,7 +451,7 @@ function notSelectedSteps(provider: SetupProvider, chosen: readonly SetupProvide
 
 /** The --providers choice as the provider.selected value, in a fixed order. */
 function providersValue(chosen: readonly SetupProvider[]): string {
-  return (["claude", "codex"] as const).filter((p) => chosen.includes(p)).join(",");
+  return (["claude", "codex", "letta"] as const).filter((p) => chosen.includes(p)).join(",");
 }
 
 /** Save the --providers choice so kernel boot uses only the chosen providers. */
@@ -483,6 +508,7 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     }
     const routerLine = routerLineStep(deps, opts.routerLine, true);
     steps.push(routerLine.step);
+    if (opts.providers?.includes("letta")) steps.push({ id: "letta_install", status: "skipped", message: "Dry run: letta_install would be attempted." });
     if (opts.providers) {
       steps.push({ id: "providers_record", status: "skipped", message: `Dry run: would record provider.selected=${providersValue(opts.providers)}.` });
     }
@@ -604,6 +630,9 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     steps.push({ id: codexName, ...codexAuth, ...(codexFix ? { fixHint: codexFix } : {}) });
   }
 
+  // 5b. Letta Code runtime (fork addition): only when chosen with --providers, so the default setup is unchanged.
+  if (opts.providers?.includes("letta")) steps.push(installLetta(deps));
+
   // 6. tmux config
   const TMUX_CONF = `${process.env["HOME"] ?? "~"}/.tmux.conf`;
   const MANAGED_MARKER = "# OpenRig managed block";
@@ -686,7 +715,7 @@ export async function runSetup(deps: SetupDeps, opts: { dryRun?: boolean; full?:
     const doctorDeps = opts.doctorDeps;
     // Reuse the post-install facts above; do not repeat login probes during verification.
     const providerChecks = steps
-      .filter((step) => ["claude_install", "claude_auth", "codex_install", "codex_auth"].includes(step.id))
+      .filter((step) => ["claude_install", "claude_auth", "codex_install", "codex_auth", "letta_install"].includes(step.id))
       .map(({ id, status, fixHint, ...check }) => ({
         name: id, status: status === "applied" ? "pass" as const : status,
         ...check, ...(fixHint ? { fix: fixHint } : {}),
@@ -866,7 +895,7 @@ export function setupCommand(depsOverride?: SetupDeps): Command {
     .option("--no-herdr", "Skip the default herdr installation; the OpenRig view can use plain tmux")
     .option("--ghostty", "Install Ghostty on macOS after the person accepts the offer")
     .option("--no-ghostty", "Decline Ghostty; Terminal.app remains available on macOS")
-    .option("--providers <list>", "The person's provider choice: claude, codex, or both. One not chosen is skipped (not installed or checked), never failed")
+    .option("--providers <list>", "The person's provider choice: claude, codex, letta, or both (Claude Code and Codex). One not chosen is skipped (not installed or checked), never failed")
     .option("--policy <name>", `Record a deliberate permission-policy choice into an existing spec (${POLICY_CHOICES.join("|")})`)
     .option("--spec <path>", "Existing rig spec (file or directory) to record the --policy choice into")
     .option("--router-line <answer>", "The person's yes or no on the one line (plus OpenRig's markers) OpenRig can add to shared guidance files; saved as skills.router_line.enabled. No answer is never a yes")

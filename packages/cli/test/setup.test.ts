@@ -1066,7 +1066,9 @@ describe("--providers: a provider the person didn't choose reads not selected, n
     expect(parseSetupProviders("both")).toEqual(["claude", "codex"]);
     expect(parseSetupProviders(" Codex , claude ")).toEqual(["codex", "claude"]);
     expect(parseSetupProviders("gemini")).toEqual({ error: expect.stringContaining("Unknown provider 'gemini'") });
-    expect(parseSetupProviders(",")).toEqual({ error: expect.stringContaining("needs claude, codex, or both") });
+    expect(parseSetupProviders(",")).toEqual({ error: expect.stringContaining("needs claude, codex, letta, or both") });
+    expect(parseSetupProviders("letta")).toEqual(["letta"]);
+    expect(parseSetupProviders("claude,letta")).toEqual(["claude", "letta"]);
     const errors: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args.map(String).join(" ")); });
     process.exitCode = undefined;

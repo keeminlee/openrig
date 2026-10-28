@@ -34,6 +34,8 @@ export type RuntimeAuthStatus = "ok" | "unavailable";
 export interface RuntimeProbeResult {
   claudeCode: RuntimeAuthStatus;
   codex: RuntimeAuthStatus;
+  /** Letta Code (fork addition): only consulted when neither Claude Code nor Codex is available. */
+  letta?: RuntimeAuthStatus;
 }
 
 export interface KernelBootDeps {
@@ -122,7 +124,7 @@ export async function bootKernelIfNeeded(deps: KernelBootDeps): Promise<KernelBo
   const selected = (deps.selectedProviders ?? readSelectedProviders)();
   const probe = chosenRuntimes(await (deps.probeRuntimes ?? defaultProbeRuntimes)(), selected);
 
-  if (probe.claudeCode === "unavailable" && probe.codex === "unavailable") {
+  if (probe.claudeCode === "unavailable" && probe.codex === "unavailable" && (probe.letta ?? "unavailable") === "unavailable") {
     const msg = authBlockMessage(selected);
     log("error", msg);
     tracker.setAuthBlocked(msg);
@@ -238,6 +240,7 @@ export function chosenRuntimes(probe: RuntimeProbeResult, selected: string): Run
   return {
     claudeCode: chosen.includes("claude") ? probe.claudeCode : "unavailable",
     codex: chosen.includes("codex") ? probe.codex : "unavailable",
+    letta: chosen.includes("letta") ? (probe.letta ?? "unavailable") : "unavailable",
   };
 }
 
@@ -246,6 +249,8 @@ export function selectVariant(probe: RuntimeProbeResult): string {
   if (probe.claudeCode === "ok" && probe.codex === "ok") return "rig.yaml";
   if (probe.claudeCode === "ok") return "rig-claude-only.yaml";
   if (probe.codex === "ok") return "rig-codex-only.yaml";
+  // Fork addition: a machine with only Letta (no Claude Code or Codex) still gets a kernel.
+  if (probe.letta === "ok") return "rig-letta-only.yaml";
   // Caller is expected to short-circuit before reaching here on the
   // both-unavailable path; defensive default keeps the type narrow.
   return "rig.yaml";
@@ -274,7 +279,7 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
   }
 
   const codexHome = process.env.CODEX_HOME || nodePath.join(os.homedir(), ".codex");
-  const [claudeCode, codex] = await Promise.all([
+  const [claudeCode, codex, letta] = await Promise.all([
     tryProbe("claude auth status"),
     probeCodexReadiness({
       run: tryProbe,
@@ -283,9 +288,12 @@ export async function defaultProbeRuntimes(): Promise<RuntimeProbeResult> {
       },
       env: process.env,
     }),
+    // Letta Code answering is availability, not a provider login: a seat whose backend has no provider connected
+    // raises letta_auth_required at launch, which names the fix.
+    tryProbe("letta --version"),
   ]);
 
-  return { claudeCode, codex };
+  return { claudeCode, codex, letta };
 }
 
 /** Issue #194 — how the Codex provider selected in `$CODEX_HOME/config.toml`
@@ -343,7 +351,9 @@ export async function probeCodexReadiness(deps: {
  *  §6.3 + the building-agent-software skill discipline. */
 export function authBlockMessage(selected = ""): string {
   if (selected) {
-    const login = selected.split(",").map((p) => p === "claude" ? "`claude auth login`" : "`codex login`").join(" or ");
+    const login = selected.split(",").map((p) => p === "claude" ? "`claude auth login`"
+      : p === "letta" ? "`npm install -g @letta-ai/letta-code` (then `letta connect <provider>` in the seats' Letta backend)"
+      : "`codex login`").join(" or ");
     return [
       `Error: Kernel rig cannot boot — no provider chosen at setup (${selected}) is authenticated.`,
       `Reason: provider.selected is ${selected} (saved by rig setup --providers or rig config set, or OPENRIG_PROVIDER_SELECTED in the daemon's environment), and the kernel uses only chosen providers.`,
@@ -352,8 +362,8 @@ export function authBlockMessage(selected = ""): string {
   }
   return [
     "Error: Kernel rig cannot boot — no AI runtime is authenticated.",
-    "Reason: Kernel rig requires at least one of Claude Code or Codex authenticated. Both are unavailable.",
-    "Fix: Run `claude auth login` to authenticate Claude Code, OR `codex login` to authenticate Codex. Then run `rig daemon start` (or `rig setup`) again.",
+    "Reason: Kernel rig requires at least one of Claude Code or Codex authenticated, or Letta Code installed. None is available.",
+    "Fix: Run `claude auth login` to authenticate Claude Code, OR `codex login` to authenticate Codex, OR install Letta Code (`npm install -g @letta-ai/letta-code`) and connect a provider in its backend. Then run `rig daemon start` (or `rig setup`) again.",
   ].join("\n");
 }
 
