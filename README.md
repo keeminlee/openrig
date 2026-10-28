@@ -1,5 +1,8 @@
 # OpenRig
 
+> [!IMPORTANT]
+> **This is a fork: OpenRig plus a Letta seat runtime (`runtime: letta`).** This `main` branch is an old copy of upstream and **doesn't contain the runtime.** The fork's work, its README and its build instructions are on [**`letta-runtime-0.7.1`**](https://github.com/keeminlee/openrig/tree/letta-runtime-0.7.1) (upstream v0.7.1 plus the Letta runtime). For OpenRig itself, go to [mvschwarz/openrig](https://github.com/mvschwarz/openrig).
+
 [![npm version](https://img.shields.io/npm/v/@openrig/cli)](https://www.npmjs.com/package/@openrig/cli) [![npm downloads](https://img.shields.io/npm/dw/@openrig/cli)](https://www.npmjs.com/package/@openrig/cli) [![License: Apache 2.0](https://img.shields.io/github/license/mvschwarz/openrig)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/mvschwarz/openrig?style=social)](https://github.com/mvschwarz/openrig/stargazers)
 
 A harness wraps a model. A rig wraps your harnesses. Define your agent team in YAML, boot it with one command. Claude Code and Codex in the same rig, managed as one system.
